@@ -151,7 +151,7 @@ vk.updates.on('message_new', async (context) => {
                 message: 'Добро пожаловать! Кто вы?',
                 keyboard: Keyboard.builder()
                     .textButton({ label: 'Я Студент', payload: { command: 'student' }, color: Keyboard.PRIMARY_COLOR })
-                    .textButton({ label: 'Я Тьютор', payload: { command: 'operator' }, color: Keyboard.POSITIVE_COLOR }) // Исправил на "Тьютор"
+                    .textButton({ label: 'Я Тьютор', payload: { command: 'operator' }, color: Keyboard.POSITIVE_COLOR })
                     .oneTime()
             });
             return;
@@ -174,15 +174,7 @@ vk.updates.on('message_new', async (context) => {
                 // Выход в меню
                 if (text === '⬅️ Назад к списку' || text === '⬅️ В меню') {
                     await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]);
-                    return context.send({
-                        message: 'Вы вышли в меню.',
-                        keyboard: Keyboard.builder()
-                            .textButton({ label: user.role === 'operator' ? '📥 Очередь вопросов' : '✉️ Задать вопрос', color: Keyboard.PRIMARY_COLOR })
-                            .row()
-                            .textButton({ label: user.role === 'operator' ? '💬 Мои диалоги' : '🗂 Мои обращения', color: Keyboard.PRIMARY_COLOR })
-                            .row()
-                            .textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR })
-                    });
+                    return mainMenu(context, user);
                 }
 
                 // Завершение тикета
@@ -198,15 +190,8 @@ vk.updates.on('message_new', async (context) => {
                     }
 
                     await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]);
-                    return context.send({
-                        message: 'Тикет закрыт.',
-                        keyboard: Keyboard.builder()
-                            .textButton({ label: user.role === 'operator' ? '📥 Очередь вопросов' : '✉️ Задать вопрос', color: Keyboard.PRIMARY_COLOR })
-                            .row()
-                            .textButton({ label: user.role === 'operator' ? '💬 Мои диалоги' : '🗂 Мои обращения', color: Keyboard.PRIMARY_COLOR })
-                            .row()
-                            .textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR })
-                    });
+                    await context.send('Тикет закрыт.');
+                    return mainMenu(context, user);
                 }
 
                 // Пересылка сообщений
@@ -228,7 +213,7 @@ vk.updates.on('message_new', async (context) => {
                     try {
                         await vk.api.messages.send({
                             peer_id: receiverId,
-                            message: `${msgPrefix}${senderInfo}:\n${text}`, // Добавил перенос строки \n
+                            message: `${msgPrefix}${senderInfo}:\n${text}`,
                             random_id: 0
                         });
                     } catch (e) { }
@@ -236,7 +221,7 @@ vk.updates.on('message_new', async (context) => {
                 break;
 
             // -----------------------------------------------------
-            // РЕГИСТРАЦИЯ (Студент и Тьютор)
+            // РЕГИСТРАЦИЯ
             // -----------------------------------------------------
             case 'registration_start':
                 if (text === 'Я Студент') {
@@ -287,15 +272,8 @@ vk.updates.on('message_new', async (context) => {
                 let tutorMsg = tutorRes.rows.length > 0 ? `Ваш тьютор: ${tutorRes.rows[0].tutor_name}` : '⚠️ Тьютор не назначен.';
 
                 await db.query("UPDATE users SET group_number = $1, role = 'student', state = 'main_menu' WHERE vk_id = $2", [group, senderId]);
-                await context.send({
-                    message: `Готово! Вы студент.\n${tutorMsg}`,
-                    keyboard: Keyboard.builder()
-                        .textButton({ label: '✉️ Задать вопрос', color: Keyboard.PRIMARY_COLOR })
-                        .row()
-                        .textButton({ label: '🗂 Мои обращения', color: Keyboard.PRIMARY_COLOR })
-                        .row()
-                        .textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR })
-                });
+                await context.send({ message: `Готово! Вы студент.\n${tutorMsg}` }); // Сообщение без кнопок, меню отправится ниже
+                await mainMenu(context, { ...user, role: 'student' });
                 break;
 
             case 'reg_operator_code':
@@ -312,15 +290,8 @@ vk.updates.on('message_new', async (context) => {
                 if (codeRes.rows.length > 0) {
                     const opData = codeRes.rows[0];
                     await db.query("UPDATE users SET role = 'operator', full_name = $1, linked_code = $2, state = 'main_menu' WHERE vk_id = $3", [opData.tutor_name, text, senderId]);
-                    await context.send({
-                        message: `Успех! Вы тьютор для: ${opData.allowed_groups.join(', ')}`,
-                        keyboard: Keyboard.builder()
-                            .textButton({ label: '📥 Очередь вопросов', color: Keyboard.PRIMARY_COLOR })
-                            .row()
-                            .textButton({ label: '💬 Мои диалоги', color: Keyboard.PRIMARY_COLOR })
-                            .row()
-                            .textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR })
-                    });
+                    await context.send({ message: `Успех! Вы тьютор для: ${opData.allowed_groups.join(', ')}` });
+                    await mainMenu(context, { ...user, role: 'operator' });
                 } else {
                     await context.send({
                         message: 'Неверный код.',
@@ -363,11 +334,24 @@ vk.updates.on('message_new', async (context) => {
                     });
                 } else if (text === '🏠 Главное меню' || text === '🔙 Назад') {
                     await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
-                    await mainMenu(context, user); // Вызов функции меню
+                    await mainMenu(context, user);
+                } else {
+                    // ЕСЛИ БОТ ЗАВИС ИЛИ НЕ ПОНЯЛ КОМАНДУ В ПРОФИЛЕ -> СБРОС В МЕНЮ
+                    // Это лечит баг, когда кнопки меню есть, а состояние профиля
+                    await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
+                    await mainMenu(context, user);
                 }
                 break;
 
             case 'profile_edit_select':
+                if (text === '🔙 Назад') {
+                    // ВОТ ЗДЕСЬ БЫЛА ОШИБКА. МЕНЯЕМ STATE НА MAIN_MENU, ЧТОБЫ КЛАВИАТУРА MAINMENU РАБОТАЛА
+                    await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
+                    await context.send('Отмена редактирования.');
+                    await mainMenu(context, user);
+                    return;
+                }
+
                 if (text === 'ФИО') {
                     const nextState = user.role === 'operator' ? 'edit_tutor_fio' : 'edit_student_fio';
                     await db.query("UPDATE users SET state = $1 WHERE vk_id = $2", [nextState, senderId]);
@@ -378,17 +362,12 @@ vk.updates.on('message_new', async (context) => {
                 } else if (text === 'Группы' && user.role === 'operator') {
                     await db.query("UPDATE users SET state = 'edit_tutor_groups' WHERE vk_id = $1", [senderId]);
                     await context.send({ message: 'Введите группы через запятую (например: РИ-101, РИ-102):', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() });
-                } else {
-                    await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]);
-                    await context.send('Отмена редактирования.');
-                    // Перезагрузка профиля (можно сделать рекурсивно, но проще отправить в меню)
-                    await mainMenu(context, user);
                 }
                 break;
 
             // Логика сохранения изменений (Студент)
             case 'edit_student_fio':
-                if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]); return mainMenu(context, user); }
+                if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Выберите, что редактировать.'); /* Возврат к выбору */ }
                 if (!REGEX_FIO.test(text)) return context.send('⚠️ Ошибка: Введите Фамилию и Имя кириллицей.');
                 await db.query("UPDATE users SET full_name = $1, state = 'main_menu' WHERE vk_id = $2", [text, senderId]);
                 await context.send('✅ ФИО обновлено.');
@@ -396,7 +375,7 @@ vk.updates.on('message_new', async (context) => {
                 break;
 
             case 'edit_student_group':
-                if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]); return mainMenu(context, user); }
+                if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Выберите, что редактировать.'); }
                 const g = text.toUpperCase();
                 if (!REGEX_GROUP.test(g)) return context.send('⚠️ Ошибка: Неверный формат группы.');
                 await db.query("UPDATE users SET group_number = $1, state = 'main_menu' WHERE vk_id = $2", [g, senderId]);
@@ -406,22 +385,20 @@ vk.updates.on('message_new', async (context) => {
 
             // Логика сохранения изменений (Тьютор)
             case 'edit_tutor_fio':
-                if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]); return mainMenu(context, user); }
+                if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Выберите, что редактировать.'); }
                 if (!REGEX_FIO.test(text)) return context.send('⚠️ Ошибка: Введите Фамилию и Имя кириллицей.');
                 await db.query("UPDATE users SET full_name = $1 WHERE vk_id = $2", [text, senderId]);
-                await db.query("UPDATE operator_codes SET tutor_name = $1 WHERE code = $2", [text, user.linked_code]); // Обновляем и в кодах
+                await db.query("UPDATE operator_codes SET tutor_name = $1 WHERE code = $2", [text, user.linked_code]);
                 await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
                 await context.send('✅ ФИО тьютора обновлено.');
                 await mainMenu(context, user);
                 break;
 
             case 'edit_tutor_groups':
-                if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]); return mainMenu(context, user); }
-                // Парсим группы: разбиваем по запятой, убираем пробелы, в верхний регистр
+                if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Выберите, что редактировать.'); }
                 const newGroups = text.split(',').map(s => s.trim().toUpperCase()).filter(s => REGEX_GROUP.test(s));
                 if (newGroups.length === 0) return context.send('⚠️ Ошибка: Ни одна группа не прошла проверку формата (АА-000000).');
 
-                // Postgres требует массив в формате {a,b,c}
                 const pgArray = `{${newGroups.join(',')}}`;
                 await db.query("UPDATE operator_codes SET allowed_groups = $1 WHERE code = $2", [pgArray, user.linked_code]);
                 await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
@@ -448,7 +425,6 @@ vk.updates.on('message_new', async (context) => {
                     return mainMenu(context, user);
                 }
 
-                // Если ввели текст вопроса -> ищем в FAQ
                 const faqQuery = `
                     SELECT answer, ts_rank_cd(search_vector, plainto_tsquery('russian', $1)) as rank
                     FROM faq
@@ -476,7 +452,6 @@ vk.updates.on('message_new', async (context) => {
                             .oneTime()
                     });
                 }
-                // Мы не меняем стейт, чтобы студент мог нажать кнопку или ввести другой вопрос
                 break;
 
             // -----------------------------------------------------
@@ -529,7 +504,6 @@ vk.updates.on('message_new', async (context) => {
                         }
                     } else if (text === '👤 Профиль') {
                         await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]);
-                        // Подтягиваем группы для отображения
                         const opRes = await db.query('SELECT allowed_groups FROM operator_codes WHERE code = $1', [user.linked_code]);
                         const groups = opRes.rows.length > 0 ? opRes.rows[0].allowed_groups.join(', ') : '';
 
@@ -541,7 +515,7 @@ vk.updates.on('message_new', async (context) => {
                                 .textButton({ label: '🏠 Главное меню', color: Keyboard.SECONDARY_COLOR })
                         });
                     } else {
-                        await mainMenu(context, user); // Дефолтное меню
+                        await mainMenu(context, user);
                     }
                 }
                 // --- СТУДЕНТ ---
@@ -574,8 +548,6 @@ vk.updates.on('message_new', async (context) => {
                         }
                     } else if (text === '👤 Профиль') {
                         await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]);
-
-                        // Получаем имя тьютора
                         const tutorRes = await db.query('SELECT * FROM operator_codes WHERE $1 = ANY(allowed_groups)', [user.group_number]);
                         let tutorName = tutorRes.rows.length > 0 ? tutorRes.rows[0].tutor_name : 'Не назначен';
 
@@ -600,11 +572,10 @@ vk.updates.on('message_new', async (context) => {
     }
 });
 
-// Вспомогательная функция для отправки Главного Меню
 async function mainMenu(context, user) {
     if (user.role === 'operator') {
         await context.send({
-            message: 'Меню тьютора:',
+            message: 'Меню Тьютора:',
             keyboard: Keyboard.builder()
                 .textButton({ label: '📥 Очередь вопросов', color: Keyboard.PRIMARY_COLOR })
                 .row()
@@ -614,7 +585,7 @@ async function mainMenu(context, user) {
         });
     } else {
         await context.send({
-            message: 'Меню студента:',
+            message: 'Меню Студента:',
             keyboard: Keyboard.builder()
                 .textButton({ label: '✉️ Задать вопрос', color: Keyboard.PRIMARY_COLOR })
                 .row()
