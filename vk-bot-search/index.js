@@ -14,7 +14,8 @@ const db = new Client({
     port: process.env.DB_PORT || 5432,
 });
 
-const log = (emoji, msg) => console.log(`${emoji} [${new Date().toLocaleTimeString()}] ${msg}`);
+// Логи без эмодзи (Clean Logs)
+const log = (msg) => console.log(`[${new Date().toLocaleTimeString()}] ${msg}`);
 
 // Regex
 const REGEX_FIO = /^[А-Яа-яЁё]+\s+[А-Яа-яЁё]+.*$/;
@@ -23,9 +24,9 @@ const REGEX_GROUP = /^[А-Я]{2,}-\d{6}$/;
 // Хелперы
 const getStatusText = (status) => {
     switch (status) {
-        case 'open': return '⏳ В ожидании';
-        case 'active': return '🟢 Активен';
-        case 'closed': return '🏁 Завершен';
+        case 'open': return 'В ожидании';
+        case 'active': return 'Активен';
+        case 'closed': return 'Завершен';
         default: return status;
     }
 };
@@ -35,6 +36,25 @@ const resolveAttachments = (attachments) => {
     return attachments.map(att => `${att.type}${att.ownerId}_${att.id}${att.accessKey ? '_' + att.accessKey : ''}`);
 };
 
+// Функция для получения вектора (Ollama)
+async function getEmbedding(text) {
+    try {
+        const response = await fetch('http://127.0.0.1:11434/api/embeddings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: 'nomic-embed-text',
+                prompt: text
+            })
+        });
+        const data = await response.json();
+        return data.embedding;
+    } catch (e) {
+        console.error('Ollama error:', e.message);
+        return null;
+    }
+}
+
 vk.updates.on('message_new', async (context) => {
     if (context.isOutbox) return;
     const { text, senderId, messagePayload, attachments } = context;
@@ -43,12 +63,48 @@ vk.updates.on('message_new', async (context) => {
 
     try {
         const msgText = text || (attachments.length > 0 ? '[Вложение]' : '[Кнопка]');
-        log('📩', `Сообщение от ${senderId}: "${msgText}"`);
+        log(`Message from ${senderId}: "${msgText}"`);
 
         // =========================================================
         // 1. ОБРАБОТКА КНОПОК (PAYLOAD)
         // =========================================================
         if (messagePayload) {
+
+            // --- ТЬЮТОР: ВЫХОД (LOGOUT) ---
+            if (messagePayload.command === 'logout') {
+                await db.query('DELETE FROM users WHERE vk_id = $1', [senderId]);
+                return context.send({
+                    message: 'Вы вышли из системы. Для начала работы напишите любое сообщение.',
+                    keyboard: Keyboard.builder().initial(false)
+                });
+            }
+
+            // --- ОБЩЕЕ: ПОКАЗАТЬ КОНКРЕТНЫЙ ОТВЕТ ИЗ СПИСКА УТОЧНЕНИЙ ---
+            if (messagePayload.command === 'show_faq_answer') {
+                const faqId = messagePayload.faq_id;
+                // Ищем ответ в базе
+                const faqRes = await db.query('SELECT question, answer FROM faq WHERE id = $1', [faqId]);
+
+                if (faqRes.rows.length > 0) {
+                    const row = faqRes.rows[0];
+                    await context.send({
+                        message: `📚 ${row.question}\n\n${row.answer}`,
+                        // ВСЕГДА добавляем кнопку связи с тьютором
+                        keyboard: Keyboard.builder()
+                            .textButton({
+                                label: '✉️ Передать вопрос тьютору',
+                                payload: { command: 'confirm_send', question: row.question }, // Передаем текст вопроса
+                                color: Keyboard.POSITIVE_COLOR
+                            })
+                            .row()
+                            .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR })
+                            .oneTime()
+                    });
+                } else {
+                    await context.send('Ошибка: ответ не найден.');
+                }
+                return;
+            }
 
             // --- ТЬЮТОР: ВЗЯТЬ ТИКЕТ ---
             if (messagePayload.command === 'take_ticket') {
@@ -129,7 +185,6 @@ vk.updates.on('message_new', async (context) => {
             if (messagePayload.command === 'confirm_send') {
                 const questionText = messagePayload.question;
 
-                // ВАЖНО: Сбрасываем state в main_menu, чтобы кнопки работали
                 await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
                 const userRes = await db.query('SELECT * FROM users WHERE vk_id = $1', [senderId]);
                 const user = userRes.rows[0];
@@ -267,21 +322,125 @@ vk.updates.on('message_new', async (context) => {
                     await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
                     return mainMenu(context, user);
                 }
-                if (text === '✉️ Задать вопрос' || text === '👤 Профиль' || text === '🗂 Мои обращения') {
+                if (['✉️ Задать вопрос', '👤 Профиль', '🗂 Мои обращения'].includes(text)) {
                     await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
                     return mainMenu(context, user);
                 }
-                const faqQuery = `SELECT answer, ts_rank_cd(search_vector, plainto_tsquery('russian', $1)) as rank FROM faq WHERE search_vector @@ plainto_tsquery('russian', $1) ORDER BY rank DESC LIMIT 1;`;
-                const faqRes = await db.query(faqQuery, [text]);
-                if (faqRes.rows.length > 0) {
-                    await context.send({
-                        message: `📚 Нашел в базе:\n${faqRes.rows[0].answer}\n\nЕсли это не то, нажмите "Передать тьютору".`,
-                        keyboard: Keyboard.builder().textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text.substring(0, 150) }, color: Keyboard.POSITIVE_COLOR }).row().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).oneTime()
-                    });
-                } else {
+
+                // 1. ПОИСК ПО СЛОВАМ (ТОЧНЫЙ)
+                // Используем websearch_to_tsquery — он умный, как Google.
+                // Игнорирует стоп-слова ("как", "что", "где") и ищет корни.
+                const keywordQuery = `
+                    SELECT id, question, answer, ts_rank_cd(search_vector, websearch_to_tsquery('russian', $1)) as rank
+                    FROM faq
+                    WHERE search_vector @@ websearch_to_tsquery('russian', $1)
+                    ORDER BY rank DESC LIMIT 3;
+                `;
+
+                const keywordRes = await db.query(keywordQuery, [text]);
+
+                // Если нашли по словам (ХОТЯ БЫ ОДИН РЕЗУЛЬТАТ)
+                // Убрали проверку rank > 0.1, так как на коротких вопросах ранг может быть маленьким
+                if (keywordRes.rows.length > 0) {
+                    log(`✅ Найдено по словам: "${keywordRes.rows[0].question}" (Rank: ${keywordRes.rows[0].rank})`);
+
+                    // Если результат один - показываем сразу
+                    if (keywordRes.rows.length === 1) {
+                        const row = keywordRes.rows[0];
+                        await context.send({
+                            message: `📚 ${row.question}\n\n${row.answer}`,
+                            keyboard: Keyboard.builder()
+                                .textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text.substring(0, 150) }, color: Keyboard.POSITIVE_COLOR })
+                                .row()
+                                .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR })
+                                .oneTime()
+                        });
+                        return;
+                    } else {
+                        // Если несколько вариантов - уточняем
+                        let kb = Keyboard.builder();
+                        let msg = '🔎 Найдено по словам:\n';
+
+                        keywordRes.rows.forEach((row, index) => {
+                            kb.textButton({
+                                label: `${index + 1}. ${row.question.substring(0, 30)}...`,
+                                payload: { command: 'show_faq_answer', faq_id: row.id },
+                                color: Keyboard.PRIMARY_COLOR
+                            }).row();
+                        });
+
+                        kb.textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text.substring(0, 150) }, color: Keyboard.POSITIVE_COLOR });
+                        kb.row().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR });
+
+                        await context.send({ message: msg, keyboard: kb.oneTime() });
+                        return;
+                    }
+                }
+
+                // 2. СЕМАНТИЧЕСКИЙ ПОИСК (ЕСЛИ СЛОВА НЕ СРАБОТАЛИ)
+                else {
+                    await context.send('🔍 Ищу по смыслу...');
+                    const userVector = await getEmbedding(text);
+
+                    if (userVector) {
+                        // Ищем ближайших соседей
+                        const semanticQuery = `
+                            SELECT id, question, answer, (embedding <=> $1) as distance
+                            FROM faq
+                            ORDER BY distance ASC
+                            LIMIT 3;
+                        `;
+                        const semanticRes = await db.query(semanticQuery, [JSON.stringify(userVector)]);
+
+                        // Порог 0.45. Если меньше - считаем, что нашли.
+                        if (semanticRes.rows.length > 0 && semanticRes.rows[0].distance < 0.45) {
+                            const bestMatch = semanticRes.rows[0];
+                            log(`🤖 Векторный результат: "${bestMatch.question}" (Dist: ${bestMatch.distance})`);
+
+                            // Если очень точное совпадение (например < 0.25) - кидаем сразу
+                            if (bestMatch.distance < 0.25) {
+                                await context.send({
+                                    message: `💡 ${bestMatch.question}\n\n${bestMatch.answer}`,
+                                    keyboard: Keyboard.builder()
+                                        .textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text.substring(0, 150) }, color: Keyboard.POSITIVE_COLOR })
+                                        .row()
+                                        .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR })
+                                        .oneTime()
+                                });
+                                return;
+                            }
+
+                            // Если сомневаемся (0.25 - 0.45) - предлагаем варианты
+                            let kb = Keyboard.builder();
+                            let msg = '💡 Возможно, вы имели в виду:\n';
+
+                            semanticRes.rows.forEach((row, index) => {
+                                // Показываем только адекватные варианты
+                                if (row.distance < 0.5) {
+                                    kb.textButton({
+                                        label: `${index + 1}. ${row.question.substring(0, 30)}...`,
+                                        payload: { command: 'show_faq_answer', faq_id: row.id },
+                                        color: Keyboard.PRIMARY_COLOR
+                                    }).row();
+                                }
+                            });
+
+                            kb.textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text.substring(0, 150) }, color: Keyboard.POSITIVE_COLOR });
+                            kb.row().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR });
+
+                            await context.send({ message: msg, keyboard: kb.oneTime() });
+                            return;
+                        }
+                    }
+
+                    // 3. НИЧЕГО НЕ НАШЛИ
                     await context.send({
                         message: 'Ответ не найден в базе. Отправить вопрос тьютору?',
-                        keyboard: Keyboard.builder().textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text.substring(0, 150) }, color: Keyboard.POSITIVE_COLOR }).row().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).oneTime()
+                        keyboard: Keyboard.builder()
+                            .textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text.substring(0, 150) }, color: Keyboard.POSITIVE_COLOR })
+                            .row()
+                            .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR })
+                            .oneTime()
                     });
                 }
                 break;
@@ -294,7 +453,7 @@ vk.updates.on('message_new', async (context) => {
                         const allowedGroups = opCodeRes.rows[0].allowed_groups;
                         const queueRes = await db.query(`SELECT t.id, t.question, u.full_name, u.group_number FROM tickets t JOIN users u ON t.student_vk_id = u.vk_id WHERE t.status = 'open' AND u.group_number = ANY($1) ORDER BY t.created_at ASC LIMIT 5`, [allowedGroups]);
 
-                        if (queueRes.rows.length === 0) { await context.send('Очередь пуста 🎉'); }
+                        if (queueRes.rows.length === 0) { await context.send('Очередь пуста 🎉'); await mainMenu(context, user); }
                         else {
                             let msg = '📥 Очередь вопросов:\n';
                             let kb = Keyboard.builder();
@@ -302,13 +461,12 @@ vk.updates.on('message_new', async (context) => {
                                 msg += `\n🆔 #${t.id} [${t.full_name} ${t.group_number}]: ${t.question.substring(0, 50)}...`;
                                 kb.textButton({ label: `Взять #${t.id}`, payload: { command: 'take_ticket', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR }).row();
                             });
-                            // ВАЖНО: Добавляем вызов mainMenu, чтобы восстановить нижние кнопки
                             await context.send({ message: msg, keyboard: kb.inline() });
                             await mainMenu(context, user);
                         }
                     } else if (text === '💬 Мои диалоги') {
                         const myChatsRes = await db.query(`SELECT t.id, t.question, u.full_name, u.group_number FROM tickets t JOIN users u ON t.student_vk_id = u.vk_id WHERE t.status = 'active' AND t.operator_vk_id = $1`, [senderId]);
-                        if (myChatsRes.rows.length === 0) { await context.send('У вас нет активных диалогов.'); }
+                        if (myChatsRes.rows.length === 0) { await context.send('У вас нет активных диалогов.'); await mainMenu(context, user); }
                         else {
                             let msg = '💬 Ваши активные диалоги:\n';
                             let kb = Keyboard.builder();
@@ -323,7 +481,15 @@ vk.updates.on('message_new', async (context) => {
                         await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]);
                         const opRes = await db.query('SELECT allowed_groups FROM operator_codes WHERE code = $1', [user.linked_code]);
                         const groups = opRes.rows.length > 0 ? opRes.rows[0].allowed_groups.join(', ') : '';
-                        await context.send({ message: `👤 Тьютор: ${user.full_name}\nГруппы: ${groups}`, keyboard: Keyboard.builder().textButton({ label: '✏️ Редактировать', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '🏠 Главное меню', color: Keyboard.SECONDARY_COLOR }) });
+                        await context.send({
+                            message: `👤 Тьютор: ${user.full_name}\nГруппы: ${groups}`,
+                            keyboard: Keyboard.builder()
+                                .textButton({ label: '✏️ Редактировать', color: Keyboard.PRIMARY_COLOR })
+                                .row()
+                                .textButton({ label: '🚪 Выйти из аккаунта', payload: { command: 'logout' }, color: Keyboard.NEGATIVE_COLOR }) // КНОПКА ВЫХОДА
+                                .row()
+                                .textButton({ label: '🏠 Главное меню', color: Keyboard.SECONDARY_COLOR })
+                        });
                     } else { await mainMenu(context, user); }
                 }
                 else if (user.role === 'student') {
@@ -332,7 +498,7 @@ vk.updates.on('message_new', async (context) => {
                         await context.send({ message: 'Напишите ваш вопрос:', keyboard: Keyboard.builder().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).oneTime() });
                     } else if (text === '🗂 Мои обращения') {
                         const myTickets = await db.query(`SELECT id, question, status, created_at FROM tickets WHERE student_vk_id = $1 ORDER BY created_at DESC LIMIT 5`, [senderId]);
-                        if (myTickets.rows.length === 0) { await context.send('У вас нет обращений.'); }
+                        if (myTickets.rows.length === 0) { await context.send('У вас нет обращений.'); await mainMenu(context, user); }
                         else {
                             let msg = '🗂 Ваши последние обращения:\n';
                             let kb = Keyboard.builder();
@@ -345,7 +511,6 @@ vk.updates.on('message_new', async (context) => {
                                     kb.textButton({ label: `✏️ Упр. #${t.id}`, payload: { command: 'manage_ticket', ticket_id: t.id }, color: Keyboard.SECONDARY_COLOR }).row();
                                 }
                             });
-                            // ВАЖНО: Восстанавливаем кнопки меню
                             await context.send({ message: msg, keyboard: kb.inline() });
                             await mainMenu(context, user);
                         }
@@ -358,7 +523,7 @@ vk.updates.on('message_new', async (context) => {
                 }
                 break;
 
-            // --- РЕГИСТРАЦИЯ И ПРОФИЛЬ (С ИСПРАВЛЕНИЯМИ КНОПОК) ---
+            // --- РЕГИСТРАЦИЯ И РЕДАКТИРОВАНИЕ (БЕЗ ИЗМЕНЕНИЙ) ---
             case 'registration_start':
                 if (text === 'Я Студент') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите ваше ФИО (Фамилия Имя, отчество если есть):', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); }
                 else if (text === 'Я Тьютор' || text === 'Я Оператор') { await db.query("UPDATE users SET state = 'reg_operator_code' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите секретный код доступа:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); }
@@ -397,7 +562,6 @@ vk.updates.on('message_new', async (context) => {
                 else if (text === 'Группу') { await db.query("UPDATE users SET state = 'edit_student_group' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Новая группа:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); }
                 else if (text === 'Группы') { await db.query("UPDATE users SET state = 'edit_tutor_groups' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Новые группы:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); }
                 break;
-            // ИСПРАВЛЕННЫЕ КЕЙСЫ РЕДАКТИРОВАНИЯ (Добавлены клавиатуры при нажатии Назад)
             case 'edit_student_fio':
                 if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Что изменить?', keyboard: Keyboard.builder().textButton({ label: 'ФИО', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Группу', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); }
                 if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1, state = 'main_menu' WHERE vk_id = $2", [text, senderId]); await context.send('ФИО обновлено.'); await mainMenu(context, { ...user, full_name: text }); break;
@@ -416,7 +580,7 @@ vk.updates.on('message_new', async (context) => {
         }
 
     } catch (err) {
-        console.error('🔥 CRITICAL ERROR:', err);
+        console.error('CRITICAL ERROR:', err);
     }
 });
 
@@ -436,9 +600,9 @@ async function mainMenu(context, user) {
 
 async function start() {
     await db.connect();
-    console.log('📦 DB Connected');
+    console.log('DB Connected');
     await vk.updates.start();
-    console.log('🚀 Bot started');
+    console.log('Bot started');
 }
 
 start();
