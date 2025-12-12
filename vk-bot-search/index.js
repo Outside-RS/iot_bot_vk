@@ -181,13 +181,34 @@ vk.updates.on('message_new', async (context) => {
                 return;
             }
 
-            // --- СТУДЕНТ: ПОДТВЕРДИТЬ ОТПРАВКУ ---
+            // --- СТУДЕНТ: ПОДТВЕРДИТЬ ОТПРАВКУ (С ПРОВЕРКОЙ ТЬЮТОРА) ---
             if (messagePayload.command === 'confirm_send') {
                 const questionText = messagePayload.question;
 
-                await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
-                const userRes = await db.query('SELECT * FROM users WHERE vk_id = $1', [senderId]);
+                // 1. Сначала получаем данные студента (нам нужна группа)
+                const userRes = await db.query('SELECT group_number, full_name FROM users WHERE vk_id = $1', [senderId]);
                 const user = userRes.rows[0];
+
+                // 2. ПРОВЕРКА: Есть ли тьюторы для этой группы?
+                // Мы ищем хотя бы одну запись в operator_codes, где группа есть в списке
+                const checkTutor = await db.query(
+                    'SELECT tutor_name FROM operator_codes WHERE $1 = ANY(allowed_groups)',
+                    [user.group_number]
+                );
+
+                if (checkTutor.rows.length === 0) {
+                    // Тьютора нет -> Отменяем отправку
+                    await context.send({
+                        message: `⚠️ Ошибка: Для вашей группы (${user.group_number}) в системе не назначен тьютор. \nВопрос не отправлен. Пожалуйста, обратитесь в деканат лично или попробуйте позже.`,
+                        keyboard: Keyboard.builder().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).oneTime()
+                    });
+                    // Возвращаем пользователя в меню, не меняя стейт в базе (или можно сбросить)
+                    await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
+                    return;
+                }
+
+                // 3. Если тьютор есть -> Продолжаем стандартную логику
+                await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
 
                 const newTicket = await db.query(
                     "INSERT INTO tickets (student_vk_id, question) VALUES ($1, $2) RETURNING id",
@@ -196,7 +217,7 @@ vk.updates.on('message_new', async (context) => {
                 const ticketId = newTicket.rows[0].id;
 
                 await context.send({
-                    message: '✅ Вопрос отправлен! Вы можете следить за статусом в "Мои обращения".',
+                    message: `✅ Вопрос отправлен! (Тьютор: ${checkTutor.rows[0].tutor_name})\nВы получите уведомление, когда его возьмут в работу.`,
                     keyboard: Keyboard.builder()
                         .textButton({ label: '🗂 Мои обращения', color: Keyboard.PRIMARY_COLOR })
                         .row()
@@ -204,12 +225,18 @@ vk.updates.on('message_new', async (context) => {
                         .oneTime()
                 });
 
-                // Уведомление тьюторам
+                // 4. Уведомление КОНКРЕТНЫМ тьюторам (у кого есть эта группа и кто зарегистрирован в боте)
                 const ops = await db.query(`
                     SELECT u.vk_id FROM users u
                     JOIN operator_codes oc ON u.linked_code = oc.code
                     WHERE u.role = 'operator' AND $1 = ANY(oc.allowed_groups)
                 `, [user.group_number]);
+
+                // Если код есть в базе, но сам человек еще не нажал /start в боте (ops.length === 0)
+                if (ops.rows.length === 0) {
+                    // Можно дополнительно уведомить студента, что тьютор еще не в сети
+                    // Но пока оставим как есть, тикет создан, тьютор увидит его в "Очереди", когда зайдет.
+                }
 
                 for (let op of ops.rows) {
                     try {
@@ -334,7 +361,7 @@ vk.updates.on('message_new', async (context) => {
                     SELECT id, question, answer, ts_rank_cd(search_vector, websearch_to_tsquery('russian', $1)) as rank
                     FROM faq
                     WHERE search_vector @@ websearch_to_tsquery('russian', $1)
-                    ORDER BY rank DESC LIMIT 3;
+                    ORDER BY rank DESC LIMIT 8;
                 `;
 
                 const keywordRes = await db.query(keywordQuery, [text]);
@@ -388,17 +415,17 @@ vk.updates.on('message_new', async (context) => {
                             SELECT id, question, answer, (embedding <=> $1) as distance
                             FROM faq
                             ORDER BY distance ASC
-                            LIMIT 3;
+                            LIMIT 8;
                         `;
                         const semanticRes = await db.query(semanticQuery, [JSON.stringify(userVector)]);
 
                         // Порог 0.45. Если меньше - считаем, что нашли.
                         if (semanticRes.rows.length > 0 && semanticRes.rows[0].distance < 0.45) {
                             const bestMatch = semanticRes.rows[0];
-                            log(`🤖 Векторный результат: "${bestMatch.question}" (Dist: ${bestMatch.distance})`);
+                            log(`Векторный результат: "${bestMatch.question}" (Dist: ${bestMatch.distance})`);
 
                             // Если очень точное совпадение (например < 0.25) - кидаем сразу
-                            if (bestMatch.distance < 0.25) {
+                            if (bestMatch.distance < 0.2) {
                                 await context.send({
                                     message: `💡 ${bestMatch.question}\n\n${bestMatch.answer}`,
                                     keyboard: Keyboard.builder()
@@ -525,8 +552,8 @@ vk.updates.on('message_new', async (context) => {
 
             // --- РЕГИСТРАЦИЯ И РЕДАКТИРОВАНИЕ (БЕЗ ИЗМЕНЕНИЙ) ---
             case 'registration_start':
-                if (text === 'Я Студент') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите ваше ФИО (Фамилия Имя, отчество если есть):', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); }
-                else if (text === 'Я Тьютор' || text === 'Я Оператор') { await db.query("UPDATE users SET state = 'reg_operator_code' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите секретный код доступа:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); }
+                if (text === 'Я студент') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите ваше ФИО (Фамилия Имя, отчество если есть):', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); }
+                else if (text === 'Я тьютор' || text === 'Я оператор') { await db.query("UPDATE users SET state = 'reg_operator_code' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите секретный код доступа:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); }
                 break;
             case 'reg_student_fio':
                 if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'registration_start' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Тьютор', color: Keyboard.POSITIVE_COLOR }).oneTime() }); }
@@ -587,12 +614,12 @@ vk.updates.on('message_new', async (context) => {
 async function mainMenu(context, user) {
     if (user.role === 'operator') {
         await context.send({
-            message: 'Меню Тьютора:',
+            message: 'Меню тьютора:',
             keyboard: Keyboard.builder().textButton({ label: '📥 Очередь вопросов', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '💬 Мои диалоги', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR })
         });
     } else {
         await context.send({
-            message: 'Меню Студента:',
+            message: 'Меню студента:',
             keyboard: Keyboard.builder().textButton({ label: '✉️ Задать вопрос', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '🗂 Мои обращения', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR })
         });
     }
