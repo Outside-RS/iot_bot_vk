@@ -50,27 +50,32 @@
 
 ### Шаг 1. Клонирование и зависимости
 ```bash
-git clone https://github.com/your-username/iot-bot-vk.git
+git clone https://github.com/Outside-RS/iot-bot-vk.git
 cd iot-bot-vk
 npm install
 ```
 
 ### Шаг 2. Настройка окружения
 Создайте файл .env в корне проекта:
-# Токен группы ВКонтакте
+#### Токен группы ВКонтакте
+```
 VK_TOKEN=ваш_длинный_токен
 VK_GROUP_ID=id_группы
+```
 
-# Настройки Базы Данных (Docker)
+#### Настройки Базы Данных (Docker)
+```
 DB_HOST=localhost
 DB_PORT=5433
 DB_USER=postgres
 DB_PASSWORD=password
 DB_NAME=postgres
+```
 
-# Пароль для входа в Админку
+#### Пароль для входа в Админку
+```
 ADMIN_PASS=admin
-
+```
 
 Шаг 3. Запуск Базы Данных (Docker)
 Запускаем контейнер с PostgreSQL и поддержкой векторов:
