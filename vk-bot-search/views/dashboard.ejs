@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Дашборд</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            background: #f4f6f8;
+        }
+
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header a {
+            color: #ecf0f1;
+            text-decoration: none;
+            margin-left: 20px;
+            font-weight: bold;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+            text-align: center;
+        }
+
+        .big-number {
+            font-size: 48px;
+            color: #27ae60;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+
+        .menu-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 30px;
+        }
+
+        .menu-item {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            text-decoration: none;
+            color: #333;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+            transition: 0.2s;
+        }
+
+        .menu-item:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .icon {
+            font-size: 40px;
+            display: block;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <div>🤖 <b>Admin Panel</b></div>
+        <div>
+            <a href="/">Главная</a>
+            <a href="/logout">Выход</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <h1>Обзор системы</h1>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div class="card">
+                <h3>Обращений (Тикетов)</h3>
+                <div class="big-number">
+                    <%= count %>
+                </div>
+            </div>
+            <div class="card">
+                <h3>Статус Ollama</h3>
+                <div class="big-number" style="color: #2980b9; font-size: 24px;">Активна</div>
+            </div>
+        </div>
+
+        <div class="menu-grid">
+            <a href="/faq" class="menu-item">
+                <span class="icon">📚</span>
+                <b>База Знаний</b>
+                <p>Добавить/Удалить вопросы</p>
+            </a>
+            <a href="/tutors" class="menu-item">
+                <span class="icon">👨‍🏫</span>
+                <b>Тьюторы</b>
+                <p>Управление доступом</p>
+            </a>
+            <a href="/broadcast" class="menu-item">
+                <span class="icon">📢</span>
+                <b>Рассылка</b>
+                <p>Написать всем</p>
+            </a>
+        </div>
+    </div>
+</body>
+
+</html>

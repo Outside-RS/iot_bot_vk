@@ -105,7 +105,7 @@ async function runMigration() {
         // Тестовый тьютор
         await db.query(`
             INSERT INTO operator_codes (code, tutor_name, allowed_groups)
-            VALUES ('TUTOR-RIOT', 'Тьютор Анна', '{"РИ-140944", "РИ-140945"}')
+            VALUES ('TUTOR-IOT', 'Иванова Анна Павловна', '{"РИ-140944", "РИ-140945"}')
             ON CONFLICT DO NOTHING;
         `);
 
@@ -117,7 +117,6 @@ async function runMigration() {
 
             for (const item of faqData) {
                 // Генерируем вектор только по вопросу (или вопрос + ключевые слова, чтобы улучшить и векторный поиск тоже)
-                // Давай добавим keywords и в вектор, это улучшит поиск по смыслу!
                 // Превращаем массив в строку, если это массив
                 const keywordsStr = Array.isArray(item.keywords) ? item.keywords.join(' ') : (item.keywords || '');
                 const textForVector = item.question + " " + keywordsStr;

@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Управление Тьюторами</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            background: #f4f6f8;
+        }
+
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .header a {
+            color: white;
+            text-decoration: none;
+            margin-left: 20px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 30px auto;
+            padding: 0 20px;
+        }
+
+        .form-box {
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+            border-left: 5px solid #8e44ad;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        button.btn-add {
+            background: #8e44ad;
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+        }
+
+        th {
+            background: #34495e;
+            color: white;
+            padding: 15px;
+            text-align: left;
+        }
+
+        td {
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .code-badge {
+            background: #eee;
+            padding: 5px 10px;
+            font-family: monospace;
+            font-weight: bold;
+            border-radius: 4px;
+            color: #333;
+        }
+
+        .del-btn {
+            color: #c0392b;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <div>👨‍🏫 <b>Управление доступом</b></div>
+        <div><a href="/">Назад в меню</a></div>
+    </div>
+
+    <div class="container">
+        <!-- Добавление (AJAX) -->
+        <div class="form-box">
+            <h3>🔑 Создать новый код доступа</h3>
+            <!-- autocomplete="off" не дает браузеру запоминать введенное -->
+            <form id="addTutorForm" autocomplete="off">
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;">
+                    <div>
+                        <label>ФИО Тьютора</label>
+                        <input type="text" name="name" placeholder="Иванов И.И." required>
+                    </div>
+                    <div>
+                        <label>Привязка к группам (через запятую)</label>
+                        <input type="text" name="groups" placeholder="РИ-101, РИ-102" required>
+                    </div>
+                    <div>
+                        <label>Придумайте Код</label>
+                        <input type="text" name="code" placeholder="SECRET-123" required>
+                    </div>
+                </div>
+                <button type="submit" class="btn-add">Создать доступ</button>
+            </form>
+        </div>
+
+        <h3>Активные коды: <%= tutors.length %>
+        </h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Код доступа</th>
+                    <th>ФИО Владельца</th>
+                    <th>Группы</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                <% tutors.forEach(function(t) { %>
+                    <tr>
+                        <td><span class="code-badge">
+                                <%= t.code %>
+                            </span></td>
+                        <td>
+                            <%= t.tutor_name %>
+                        </td>
+                        <td>
+                            <%= t.allowed_groups ? t.allowed_groups.join(', ') : '' %></td>
+                        <td>
+                            <a href="/tutors/edit/<%= t.code %>" style="text-decoration: none; margin-right: 10px;">✏️</a>
+                            <form action="/tutors/delete/<%= t.code %>" method="POST" onsubmit="return confirm('
+                                Удалить?');" style="display:inline; margin:0;">
+                                <button type="submit" class="del-btn">🗑</button>
+                                </form>
+                        </td>
+                    </tr>
+                    <% }); %>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        document.getElementById('addTutorForm').addEventListener('submit', async function (e) {
+            e.preventDefault(); // Останавливаем обычную отправку формы
+
+            const formData = new URLSearchParams(new FormData(this));
+
+            try {
+                const response = await fetch('/tutors/add', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (response.ok) {
+                    // Перезагружаем страницу, ЗАМЕНЯЯ текущую запись в истории
+                    // Теперь кнопка "Назад" не вернет нас на форму, а вернет на Главную
+                    window.location.replace('/tutors');
+                } else {
+                    alert('Ошибка при добавлении (возможно, такой код уже есть)');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Ошибка соединения');
+            }
+        });
+    </script>
+</body>
+
+</html>

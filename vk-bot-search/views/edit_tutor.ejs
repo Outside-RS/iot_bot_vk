@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Редактирование Тьютора</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            background: #f4f6f8;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            border-top: 5px solid #8e44ad;
+        }
+
+        input {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        label {
+            font-weight: bold;
+            font-size: 14px;
+            color: #555;
+        }
+
+        button {
+            padding: 12px 25px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            border: none;
+            color: white;
+            background: #8e44ad;
+        }
+
+        button:hover {
+            background: #732d91;
+        }
+
+        .cancel {
+            color: #7f8c8d;
+            text-decoration: none;
+            margin-left: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h2>✏️ Редактирование доступа</h2>
+        <form action="/tutors/edit/<%= tutor.code %>" method="POST">
+
+            <label>Код доступа (Нельзя изменить)</label>
+            <input type="text" value="<%= tutor.code %>" disabled style="background: #eee; cursor: not-allowed;">
+
+            <label>ФИО Тьютора</label>
+            <input type="text" name="name" value="<%= tutor.tutor_name %>" required>
+
+            <label>Группы (через запятую)</label>
+            <!-- Превращаем массив обратно в строку для редактирования -->
+            <input type="text" name="groups" value="<%= tutor.allowed_groups.join(', ') %>" required>
+
+            <button type="submit">💾 Сохранить</button>
+            <a href="/tutors" class="cancel">Отмена</a>
+        </form>
+    </div>
+</body>
+
+</html>
