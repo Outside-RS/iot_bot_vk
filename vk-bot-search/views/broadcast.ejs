@@ -105,6 +105,22 @@
                     <input type="text" name="group_number" placeholder="Введите номер группы (например, РИ-140944)">
                 </div>
 
+                <div style="margin-bottom: 20px;">
+                    <label><b>От имени какой группы VK?</b></label>
+                    <select name="vk_group_id"
+                        style="width: 100%; padding: 10px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px;">
+                        <% if (groups && groups.length> 0) { %>
+                            <% groups.forEach(function(g) { %>
+                                <option value="<%= g.group_id %>">
+                                    <%= g.group_name %>
+                                </option>
+                                <% }); %>
+                                    <% } else { %>
+                                        <option value="">Нет активных групп</option>
+                                        <% } %>
+                    </select>
+                </div>
+
                 <label><b>Текст сообщения:</b></label>
                 <textarea name="message" rows="8" placeholder="Уважаемые..." required></textarea>
                 <button type="submit" class="btn-send">🚀 Отправить</button>

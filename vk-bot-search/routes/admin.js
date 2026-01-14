@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { db, getEmbedding } = require('../database');
+const createBotInstance = require('../bot');
 
 // Проверка авторизации
 function requireAuth(req, res, next) {
@@ -42,7 +43,22 @@ router.get('/logout', (req, res) => {
 router.get('/', requireAuth, noCache, async (req, res) => {
     try {
         const ticketCount = await db.query('SELECT count(*) FROM tickets');
-        res.render('dashboard', { count: ticketCount.rows[0].count });
+        const botsCount = Object.keys(global.bots || {}).length;
+
+        // Проверка Ollama
+        let ollamaStatus = 'Не активна';
+        try {
+            const ollamaRes = await fetch('http://127.0.0.1:11434/api/tags', {
+                signal: AbortSignal.timeout(2000)
+            });
+            if (ollamaRes.ok) ollamaStatus = 'Активна';
+        } catch (e) { /* Ollama не отвечает */ }
+
+        res.render('dashboard', {
+            count: ticketCount.rows[0].count,
+            botsCount,
+            ollamaStatus
+        });
     } catch (e) {
         res.send('Ошибка БД: ' + e.message);
     }
@@ -157,10 +173,6 @@ router.post('/faq/edit/:id', requireAuth, noCache, async (req, res) => {
     }
 });
 
-// Импорт для рассылки
-const { VK } = require('vk-io');
-const vkAdmin = new VK({ token: process.env.VK_TOKEN });
-
 // === ТЬЮТОРЫ ===
 
 // Страница редактирования тьютора
@@ -228,20 +240,32 @@ router.post('/tutors/delete/:code', requireAuth, noCache, async (req, res) => {
 
 // === РАССЫЛКА ===
 
-router.get('/broadcast', requireAuth, noCache, (req, res) => {
-    res.render('broadcast');
+router.get('/broadcast', requireAuth, noCache, async (req, res) => {
+    try {
+        const groups = await db.query('SELECT group_id, group_name FROM vk_groups WHERE is_active = TRUE');
+        res.render('broadcast', { groups: groups.rows });
+    } catch (e) {
+        res.render('broadcast', { groups: [] });
+    }
 });
 
 router.post('/broadcast/send', requireAuth, async (req, res) => {
-    const { message, target, group_number } = req.body;
+    const { message, target, group_number, vk_group_id } = req.body;
+
+    // Получаем бота для отправки
+    const botGroupId = vk_group_id || Object.keys(global.bots)[0];
+    const bot = global.bots[botGroupId];
+
+    if (!bot) {
+        return res.send('<h1>❌ Нет активных ботов!</h1><a href="/groups">Добавить группу</a>');
+    }
 
     (async () => {
         try {
-            console.log(`🚀 Рассылка запущена. Цель: ${target}`);
+            console.log(`🚀 Рассылка через группу ${botGroupId}. Цель: ${target}`);
             let query = '';
             let params = [];
 
-            // Выбираем получателей
             if (target === 'all') {
                 query = 'SELECT vk_id FROM users';
             } else if (target === 'students') {
@@ -258,16 +282,14 @@ router.post('/broadcast/send', requireAuth, async (req, res) => {
 
             for (const user of users.rows) {
                 try {
-                    await vkAdmin.api.messages.send({
+                    await bot.api.messages.send({
                         peer_id: user.vk_id,
                         message: `📢 РАССЫЛКА:\n\n${message}`,
                         random_id: 0
                     });
                     count++;
-                    await new Promise(r => setTimeout(r, 50)); // Анти-спам
-                } catch (err) {
-                    // Игнорируем тех, кто заблочил бота
-                }
+                    await new Promise(r => setTimeout(r, 50));
+                } catch (err) { }
             }
             console.log(`✅ Рассылка завершена. Доставлено: ${count}`);
         } catch (e) {
@@ -280,6 +302,125 @@ router.post('/broadcast/send', requireAuth, async (req, res) => {
         <p>Цель: ${target === 'group' ? group_number : target}</p>
         <a href="/">Вернуться</a>
     `);
+});
+
+// === ГРУППЫ VK ===
+
+// Список групп
+router.get('/groups', requireAuth, noCache, async (req, res) => {
+    try {
+        const result = await db.query('SELECT * FROM vk_groups ORDER BY created_at DESC');
+        res.render('groups', { groups: result.rows, error: null, success: null });
+    } catch (e) {
+        res.send('Ошибка: ' + e.message);
+    }
+});
+
+// Добавить группу
+router.post('/groups/add', requireAuth, noCache, async (req, res) => {
+    let { group_id, access_token, group_name } = req.body;
+
+    try {
+        // Валидация токена через VK API
+        const response = await fetch(
+            `https://api.vk.com/method/groups.getById?group_id=${group_id}&access_token=${access_token}&v=5.199`
+        );
+        const data = await response.json();
+
+        if (data.error) {
+            const result = await db.query('SELECT * FROM vk_groups ORDER BY created_at DESC');
+            return res.render('groups', {
+                groups: result.rows,
+                error: `❌ Ошибка VK API: ${data.error.error_msg}`,
+                success: null
+            });
+        }
+
+        // Автоматически берем название из VK, если не указано
+        if (!group_name && data.response && data.response.groups && data.response.groups[0]) {
+            group_name = data.response.groups[0].name;
+        } else if (!group_name) {
+            group_name = `Группа ${group_id}`;
+        }
+
+        await db.query(
+            'INSERT INTO vk_groups (group_id, group_name, access_token) VALUES ($1, $2, $3)',
+            [group_id, group_name, access_token]
+        );
+
+        // Динамически запускаем бота сразу (без перезапуска сервера)
+        try {
+            const botInstance = createBotInstance(access_token, group_id, group_name);
+            await botInstance.updates.start();
+            global.bots[group_id] = botInstance;
+            console.log(`🚀 Бот динамически запущен: ${group_name}`);
+        } catch (botErr) {
+            console.error(`⚠️ Не удалось запустить бота: ${botErr.message}`);
+        }
+
+        const result = await db.query('SELECT * FROM vk_groups ORDER BY created_at DESC');
+        res.render('groups', {
+            groups: result.rows,
+            error: null,
+            success: `✅ Группа "${group_name}" добавлена и запущена!`
+        });
+    } catch (e) {
+        res.send('Ошибка: ' + e.message);
+    }
+});
+
+// Удалить группу
+router.post('/groups/delete/:id', requireAuth, noCache, async (req, res) => {
+    try {
+        // Получаем group_id перед удалением
+        const groupRes = await db.query('SELECT group_id, group_name FROM vk_groups WHERE id = $1', [req.params.id]);
+        if (groupRes.rows.length > 0) {
+            const groupId = groupRes.rows[0].group_id;
+            // Останавливаем бота если он запущен
+            if (global.bots[groupId]) {
+                await global.bots[groupId].updates.stop();
+                delete global.bots[groupId];
+                console.log(`🛑 Бот остановлен: ${groupRes.rows[0].group_name}`);
+            }
+        }
+        await db.query('DELETE FROM vk_groups WHERE id = $1', [req.params.id]);
+        res.redirect('/groups');
+    } catch (e) {
+        res.send('Ошибка удаления: ' + e.message);
+    }
+});
+
+// Вкл/Выкл группу
+router.post('/groups/toggle/:id', requireAuth, noCache, async (req, res) => {
+    try {
+        // Получаем текущее состояние
+        const groupRes = await db.query('SELECT group_id, group_name, access_token, is_active FROM vk_groups WHERE id = $1', [req.params.id]);
+        if (groupRes.rows.length > 0) {
+            const group = groupRes.rows[0];
+            if (group.is_active) {
+                // Выключаем — останавливаем бота
+                if (global.bots[group.group_id]) {
+                    await global.bots[group.group_id].updates.stop();
+                    delete global.bots[group.group_id];
+                    console.log(`⏸️ Бот отключен: ${group.group_name}`);
+                }
+            } else {
+                // Включаем — запускаем бота
+                try {
+                    const botInstance = createBotInstance(group.access_token, group.group_id, group.group_name);
+                    await botInstance.updates.start();
+                    global.bots[group.group_id] = botInstance;
+                    console.log(`▶️ Бот включен: ${group.group_name}`);
+                } catch (botErr) {
+                    console.error(`⚠️ Ошибка запуска: ${botErr.message}`);
+                }
+            }
+        }
+        await db.query('UPDATE vk_groups SET is_active = NOT is_active WHERE id = $1', [req.params.id]);
+        res.redirect('/groups');
+    } catch (e) {
+        res.send('Ошибка: ' + e.message);
+    }
 });
 
 module.exports = router;

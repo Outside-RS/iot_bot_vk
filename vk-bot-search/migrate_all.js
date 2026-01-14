@@ -39,11 +39,21 @@ async function runMigration() {
             DROP TABLE IF EXISTS faq CASCADE;
             DROP TABLE IF EXISTS users CASCADE;
             DROP TABLE IF EXISTS operator_codes CASCADE;
+            DROP TABLE IF EXISTS vk_groups CASCADE;
         `);
 
         console.log('Создание новой структуры...');
 
         await db.query(`
+            CREATE TABLE vk_groups (
+                id SERIAL PRIMARY KEY,
+                group_id BIGINT UNIQUE NOT NULL,
+                group_name TEXT NOT NULL,
+                access_token TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+
             CREATE TABLE operator_codes (
                 code TEXT PRIMARY KEY,
                 tutor_name TEXT NOT NULL,

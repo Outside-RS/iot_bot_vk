@@ -76,6 +76,14 @@
             display: block;
             margin-bottom: 10px;
         }
+
+        .text-green {
+            color: #27ae60;
+        }
+
+        .text-red {
+            color: #e74c3c;
+        }
     </style>
 </head>
 
@@ -91,7 +99,7 @@
     <div class="container">
         <h1>Обзор системы</h1>
 
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;">
             <div class="card">
                 <h3>Обращений (Тикетов)</h3>
                 <div class="big-number">
@@ -99,8 +107,17 @@
                 </div>
             </div>
             <div class="card">
+                <h3>Активных ботов</h3>
+                <div class="big-number <%= botsCount > 0 ? 'text-green' : 'text-red' %>">
+                    <%= botsCount %>
+                </div>
+            </div>
+            <div class="card">
                 <h3>Статус Ollama</h3>
-                <div class="big-number" style="color: #2980b9; font-size: 24px;">Активна</div>
+                <div class="big-number <%= ollamaStatus === 'Активна' ? 'text-green' : 'text-red' %>"
+                    style="font-size: 24px;">
+                    <%= ollamaStatus %>
+                </div>
             </div>
         </div>
 
@@ -114,6 +131,11 @@
                 <span class="icon">👨‍🏫</span>
                 <b>Тьюторы</b>
                 <p>Управление доступом</p>
+            </a>
+            <a href="/groups" class="menu-item">
+                <span class="icon">📌</span>
+                <b>Группы VK</b>
+                <p>Подключение сообществ</p>
             </a>
             <a href="/broadcast" class="menu-item">
                 <span class="icon">📢</span>
