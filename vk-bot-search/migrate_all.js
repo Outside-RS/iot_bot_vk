@@ -68,6 +68,9 @@ async function runMigration() {
                 linked_code TEXT,
                 state TEXT DEFAULT 'registration_start',
                 current_chat_ticket_id INTEGER,
+                study_years INTEGER DEFAULT 4,
+                vk_group_id BIGINT,
+                is_graduated BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 

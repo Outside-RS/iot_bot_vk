@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Пользователи — Админ-панель</title>
+    <link rel="stylesheet" href="/css/admin.css">
+    <style>
+        .filters {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+
+        .filters select,
+        .filters input {
+            padding: 10px 15px;
+            min-width: 150px;
+        }
+
+        .graduated {
+            opacity: 0.6;
+        }
+
+        .course-badge {
+            display: inline-block;
+            width: 28px;
+            height: 28px;
+            line-height: 28px;
+            text-align: center;
+            border-radius: 50%;
+            background: var(--accent);
+            color: #000;
+            font-weight: bold;
+        }
+
+        .course-badge.graduated {
+            background: var(--text-muted);
+            color: var(--text-secondary);
+        }
+
+        .bulk-actions {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: var(--bg-secondary);
+            border-radius: var(--radius);
+        }
+    </style>
+</head>
+
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
+        <div class="nav-links">
+            <a href="/" class="nav-link">🏠 Главная</a>
+            <a href="/faq" class="nav-link">📚 База знаний</a>
+            <a href="/tutors" class="nav-link">👨‍🏫 Тьюторы</a>
+            <a href="/groups" class="nav-link">📌 Группы VK</a>
+            <a href="/users" class="nav-link active">👥 Пользователи</a>
+            <a href="/broadcast" class="nav-link">📢 Рассылка</a>
+        </div>
+        <div class="nav-right">
+            <a href="/logout" class="nav-logout">🚪 Выход</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <h1 class="page-title">👥 Пользователи</h1>
+
+        <% if (typeof success !=='undefined' && success) { %>
+            <div class="alert alert-success">
+                <%= success %>
+            </div>
+            <% } %>
+                <% if (typeof error !=='undefined' && error) { %>
+                    <div class="alert alert-error">
+                        <%= error %>
+                    </div>
+                    <% } %>
+
+                        <form method="GET" action="/users" class="filters">
+                            <select name="course">
+                                <option value="">Все курсы</option>
+                                <option value="1" <%=filter_course=='1' ? 'selected' : '' %>>1 курс</option>
+                                <option value="2" <%=filter_course=='2' ? 'selected' : '' %>>2 курс</option>
+                                <option value="3" <%=filter_course=='3' ? 'selected' : '' %>>3 курс</option>
+                                <option value="4" <%=filter_course=='4' ? 'selected' : '' %>>4 курс</option>
+                                <option value="5" <%=filter_course=='5' ? 'selected' : '' %>>5 курс</option>
+                                <option value="6" <%=filter_course=='6' ? 'selected' : '' %>>6 курс</option>
+                            </select>
+                            <input type="text" name="group" placeholder="Группа (РИ-140944)"
+                                value="<%= filter_group || '' %>">
+                            <select name="role">
+                                <option value="">Все роли</option>
+                                <option value="student" <%=filter_role=='student' ? 'selected' : '' %>>Студенты</option>
+                                <option value="operator" <%=filter_role=='operator' ? 'selected' : '' %>>Тьюторы
+                                </option>
+                            </select>
+                            <select name="graduated">
+                                <option value="">Все статусы</option>
+                                <option value="false" <%=filter_graduated=='false' ? 'selected' : '' %>>Активные
+                                </option>
+                                <option value="true" <%=filter_graduated=='true' ? 'selected' : '' %>>Выпускники
+                                </option>
+                            </select>
+                            <button type="submit" class="btn btn-primary">🔍 Фильтр</button>
+                            <a href="/users" class="btn btn-danger">✕ Сбросить</a>
+                        </form>
+
+                        <div class="bulk-actions">
+                            <form action="/users/promote-all" method="POST"
+                                onsubmit="return confirm('Перевести ВСЕХ отфильтрованных на +1 курс?');">
+                                <input type="hidden" name="course" value="<%= filter_course || '' %>">
+                                <input type="hidden" name="group" value="<%= filter_group || '' %>">
+                                <input type="hidden" name="role" value="<%= filter_role || '' %>">
+                                <button type="submit" class="btn btn-warning">🔼 Перевести всех на +1 курс</button>
+                            </form>
+                            <span style="color: var(--text-muted); line-height: 40px;">Найдено: <b>
+                                    <%= users.length %>
+                                </b></span>
+                        </div>
+
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>VK ID</th>
+                                        <th>ФИО</th>
+                                        <th>Группа</th>
+                                        <th>Курс</th>
+                                        <th>Роль</th>
+                                        <th>Лет обучения</th>
+                                        <th>Статус</th>
+                                        <th>Действия</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <% if (users.length===0) { %>
+                                        <tr>
+                                            <td colspan="8" class="empty-state">
+                                                <div class="icon">👤</div>
+                                                Нет пользователей
+                                            </td>
+                                        </tr>
+                                        <% } else { %>
+                                            <% users.forEach(function(u) { var courseMatch=u.group_number ?
+                                                u.group_number.match(/-(\d)/) : null; var course=courseMatch ?
+                                                courseMatch[1] : '?' ; %>
+                                                <tr class="<%= u.is_graduated ? 'graduated' : '' %>">
+                                                    <td><a href="https://vk.com/id<%= u.vk_id %>" target="_blank">
+                                                            <%= u.vk_id %>
+                                                        </a></td>
+                                                    <td>
+                                                        <%= u.full_name || '—' %>
+                                                    </td>
+                                                    <td><span class="badge badge-info">
+                                                            <%= u.group_number || '—' %>
+                                                        </span></td>
+                                                    <td><span
+                                                            class="course-badge <%= u.is_graduated ? 'graduated' : '' %>">
+                                                            <%= course %>
+                                                        </span></td>
+                                                    <td>
+                                                        <span
+                                                            class="badge <%= u.role === 'operator' ? 'badge-purple' : 'badge-success' %>">
+                                                            <%= u.role==='operator' ? 'Тьютор' : 'Студент' %>
+                                                        </span>
+                                                    </td>
+                                                    <td>
+                                                        <%= u.study_years || 4 %> лет
+                                                    </td>
+                                                    <td>
+                                                        <% if (u.is_graduated) { %>
+                                                            <span class="badge badge-warning">🎓 Выпускник</span>
+                                                            <% } else { %>
+                                                                <span class="badge badge-success">Учится</span>
+                                                                <% } %>
+                                                    </td>
+                                                    <td class="actions">
+                                                        <% if (!u.is_graduated) { %>
+                                                            <form action="/users/promote/<%= u.vk_id %>" method="POST"
+                                                                style="display:inline;">
+                                                                <button type="submit" class="btn btn-warning btn-sm"
+                                                                    title="Курс +1">🔼</button>
+                                                            </form>
+                                                            <form action="/users/graduate/<%= u.vk_id %>" method="POST"
+                                                                style="display:inline;"
+                                                                onsubmit="return confirm('Пометить как выпускника?');">
+                                                                <button type="submit" class="btn btn-primary btn-sm"
+                                                                    title="Выпустить">🎓</button>
+                                                            </form>
+                                                            <% } %>
+                                                                <form action="/users/delete/<%= u.vk_id %>"
+                                                                    method="POST" style="display:inline;"
+                                                                    onsubmit="return confirm('Удалить пользователя?');">
+                                                                    <button type="submit" class="btn btn-danger btn-sm"
+                                                                        title="Удалить">🗑</button>
+                                                                </form>
+                                                    </td>
+                                                </tr>
+                                                <% }); %>
+                                                    <% } %>
+                                </tbody>
+                            </table>
+                        </div>
+    </div>
+</body>
+
+</html>

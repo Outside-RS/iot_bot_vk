@@ -423,4 +423,180 @@ router.post('/groups/toggle/:id', requireAuth, noCache, async (req, res) => {
     }
 });
 
+// === ПОЛЬЗОВАТЕЛИ ===
+
+// Функция увеличения курса в номере группы (РИ-140944 -> РИ-240944)
+function promoteCourse(groupNumber) {
+    if (!groupNumber) return groupNumber;
+    // Ищем паттерн: буквы-цифры, первая цифра — курс
+    return groupNumber.replace(/^([А-Яа-яA-Za-z]+-?)(\d)/, (match, prefix, courseDigit) => {
+        const newCourse = Math.min(parseInt(courseDigit) + 1, 9);
+        return prefix + newCourse;
+    });
+}
+
+// Список пользователей с фильтрами
+router.get('/users', requireAuth, noCache, async (req, res) => {
+    try {
+        const { course, group, role, graduated } = req.query;
+
+        let query = 'SELECT * FROM users WHERE 1=1';
+        const params = [];
+        let paramIndex = 1;
+
+        // Фильтр по курсу (первая цифра после дефиса)
+        if (course) {
+            query += ` AND group_number ~ $${paramIndex}`;
+            params.push(`^[А-Яа-яA-Za-z]+-${course}`);
+            paramIndex++;
+        }
+
+        // Фильтр по группе
+        if (group) {
+            query += ` AND group_number ILIKE $${paramIndex}`;
+            params.push(`%${group}%`);
+            paramIndex++;
+        }
+
+        // Фильтр по роли
+        if (role) {
+            query += ` AND role = $${paramIndex}`;
+            params.push(role);
+            paramIndex++;
+        }
+
+        // Фильтр по статусу выпускника
+        if (graduated === 'true') {
+            query += ' AND is_graduated = TRUE';
+        } else if (graduated === 'false') {
+            query += ' AND (is_graduated = FALSE OR is_graduated IS NULL)';
+        }
+
+        query += ' ORDER BY created_at DESC';
+
+        const result = await db.query(query, params);
+
+        res.render('users', {
+            users: result.rows,
+            filter_course: course || '',
+            filter_group: group || '',
+            filter_role: role || '',
+            filter_graduated: graduated || '',
+            success: req.query.success,
+            error: req.query.error
+        });
+    } catch (e) {
+        res.send('Ошибка: ' + e.message);
+    }
+});
+
+// Перевести на +1 курс (одного)
+router.post('/users/promote/:vk_id', requireAuth, noCache, async (req, res) => {
+    try {
+        const { vk_id } = req.params;
+        const user = await db.query('SELECT group_number, study_years FROM users WHERE vk_id = $1', [vk_id]);
+
+        if (user.rows.length > 0) {
+            const newGroup = promoteCourse(user.rows[0].group_number);
+
+            // Проверяем, не выпускник ли
+            const courseMatch = newGroup ? newGroup.match(/-(\d)/) : null;
+            const newCourse = courseMatch ? parseInt(courseMatch[1]) : 1;
+            const studyYears = user.rows[0].study_years || 4;
+
+            if (newCourse > studyYears) {
+                // Помечаем как выпускника
+                await db.query('UPDATE users SET group_number = $1, is_graduated = TRUE WHERE vk_id = $2', [newGroup, vk_id]);
+            } else {
+                await db.query('UPDATE users SET group_number = $1 WHERE vk_id = $2', [newGroup, vk_id]);
+            }
+        }
+
+        res.redirect('/users?success=' + encodeURIComponent('Курс обновлён'));
+    } catch (e) {
+        res.redirect('/users?error=' + encodeURIComponent(e.message));
+    }
+});
+
+// Пометить выпускником
+router.post('/users/graduate/:vk_id', requireAuth, noCache, async (req, res) => {
+    try {
+        await db.query('UPDATE users SET is_graduated = TRUE WHERE vk_id = $1', [req.params.vk_id]);
+        res.redirect('/users?success=' + encodeURIComponent('Пользователь помечен как выпускник'));
+    } catch (e) {
+        res.redirect('/users?error=' + encodeURIComponent(e.message));
+    }
+});
+
+// Удалить пользователя
+router.post('/users/delete/:vk_id', requireAuth, noCache, async (req, res) => {
+    try {
+        await db.query('DELETE FROM users WHERE vk_id = $1', [req.params.vk_id]);
+        res.redirect('/users?success=' + encodeURIComponent('Пользователь удалён'));
+    } catch (e) {
+        res.redirect('/users?error=' + encodeURIComponent(e.message));
+    }
+});
+
+// Перевести всех отфильтрованных на +1 курс
+router.post('/users/promote-all', requireAuth, noCache, async (req, res) => {
+    try {
+        const { course, group, role } = req.body;
+
+        let query = 'SELECT vk_id, group_number, study_years FROM users WHERE (is_graduated = FALSE OR is_graduated IS NULL)';
+        const params = [];
+        let paramIndex = 1;
+
+        if (course) {
+            query += ` AND group_number ~ $${paramIndex}`;
+            params.push(`^[А-Яа-яA-Za-z]+-${course}`);
+            paramIndex++;
+        }
+
+        if (group) {
+            query += ` AND group_number ILIKE $${paramIndex}`;
+            params.push(`%${group}%`);
+            paramIndex++;
+        }
+
+        if (role) {
+            query += ` AND role = $${paramIndex}`;
+            params.push(role);
+            paramIndex++;
+        }
+
+        const result = await db.query(query, params);
+        let promoted = 0;
+        let graduated = 0;
+
+        for (const user of result.rows) {
+            const newGroup = promoteCourse(user.group_number);
+            const courseMatch = newGroup ? newGroup.match(/-(\d)/) : null;
+            const newCourse = courseMatch ? parseInt(courseMatch[1]) : 1;
+            const studyYears = user.study_years || 4;
+
+            if (newCourse > studyYears) {
+                await db.query('UPDATE users SET group_number = $1, is_graduated = TRUE WHERE vk_id = $2', [newGroup, user.vk_id]);
+                graduated++;
+            } else {
+                await db.query('UPDATE users SET group_number = $1 WHERE vk_id = $2', [newGroup, user.vk_id]);
+                promoted++;
+            }
+        }
+
+        // Обновляем группы у тьюторов тоже
+        const tutors = await db.query('SELECT code, allowed_groups FROM operator_codes');
+        for (const tutor of tutors.rows) {
+            if (tutor.allowed_groups && tutor.allowed_groups.length > 0) {
+                const newGroups = tutor.allowed_groups.map(g => promoteCourse(g));
+                await db.query('UPDATE operator_codes SET allowed_groups = $1 WHERE code = $2', [newGroups, tutor.code]);
+            }
+        }
+
+        res.redirect('/users?success=' + encodeURIComponent(`✅ Переведено: ${promoted}, Выпущено: ${graduated}, Тьюторы обновлены`));
+    } catch (e) {
+        res.redirect('/users?error=' + encodeURIComponent(e.message));
+    }
+});
+
 module.exports = router;
