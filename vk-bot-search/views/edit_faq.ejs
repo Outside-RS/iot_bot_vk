@@ -3,106 +3,57 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Редактирование вопроса</title>
-    <style>
-        body {
-            font-family: sans-serif;
-            margin: 0;
-            background: #f4f6f8;
-        }
-
-        .container {
-            max-width: 800px;
-            margin: 50px auto;
-            padding: 0 20px;
-        }
-
-        .form-box {
-            background: white;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-            border-top: 5px solid #f39c12;
-        }
-
-        input,
-        textarea {
-            width: 100%;
-            padding: 10px;
-            margin: 5px 0 15px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            box-sizing: border-box;
-        }
-
-        label {
-            font-weight: bold;
-            font-size: 14px;
-            color: #555;
-        }
-
-        button {
-            padding: 12px 25px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 16px;
-            border: none;
-            color: white;
-        }
-
-        .btn-save {
-            background: #f39c12;
-        }
-
-        .btn-save:hover {
-            background: #e67e22;
-        }
-
-        .btn-cancel {
-            background: #95a5a6;
-            text-decoration: none;
-            display: inline-block;
-            text-align: center;
-        }
-
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Редактирование вопроса — Админ-панель</title>
+    <link rel="stylesheet" href="/css/admin.css">
 </head>
 
 <body>
-    <div class="container">
-        <div class="header">
-            <h2>✏️ Редактирование вопроса #<%= item.id %>
-            </h2>
+    <!-- Навигация -->
+    <nav class="nav">
+        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
+        <div class="nav-links">
+            <a href="/" class="nav-link">🏠 Главная</a>
+            <a href="/faq" class="nav-link active">📚 База знаний</a>
+            <a href="/tutors" class="nav-link">👨‍🏫 Тьюторы</a>
+            <a href="/groups" class="nav-link">📌 Группы VK</a>
+            <a href="/broadcast" class="nav-link">📢 Рассылка</a>
         </div>
+        <div class="nav-right">
+            <a href="/logout" class="nav-logout">🚪 Выход</a>
+        </div>
+    </nav>
 
-        <div class="form-box">
+    <div class="container" style="max-width: 800px;">
+        <h1 class="page-title">✏️ Редактирование вопроса #<%= item.id %>
+        </h1>
+
+        <div class="card">
             <form action="/faq/edit/<%= item.id %>" method="POST">
-                <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 20px;">
-                    <div>
+                <div class="form-row">
+                    <div class="form-group" style="flex: 1;">
                         <label>Категория</label>
                         <input type="text" name="category" value="<%= item.category %>" required>
                     </div>
-                    <div>
+                    <div class="form-group" style="flex: 2;">
                         <label>Вопрос</label>
                         <input type="text" name="question" value="<%= item.question %>" required>
                     </div>
                 </div>
 
-                <label>Ответ</label>
-                <textarea name="answer" rows="6" required><%= item.answer %></textarea>
+                <div class="form-group">
+                    <label>Ответ</label>
+                    <textarea name="answer" rows="6" required><%= item.answer %></textarea>
+                </div>
 
-                <label>Ключевые слова</label>
-                <input type="text" name="keywords" value="<%= item.keywords || '' %>">
+                <div class="form-group">
+                    <label>Ключевые слова</label>
+                    <input type="text" name="keywords" value="<%= item.keywords || '' %>">
+                </div>
 
-                <div style="margin-top: 20px;">
-                    <button type="submit" class="btn-save">💾 Сохранить изменения (Обновить вектор)</button>
-                    <a href="/faq" class="btn-cancel" style="padding: 12px 25px; color: white;">Отмена</a>
+                <div style="display: flex; gap: 15px; margin-top: 20px;">
+                    <button type="submit" class="btn btn-warning">💾 Сохранить изменения</button>
+                    <a href="/faq" class="btn btn-danger" style="text-decoration: none;">Отмена</a>
                 </div>
             </form>
         </div>

@@ -3,228 +3,137 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>База Знаний</title>
-    <style>
-        body {
-            font-family: sans-serif;
-            margin: 0;
-            background: #f4f6f8;
-        }
-
-        .header {
-            background: #2c3e50;
-            color: white;
-            padding: 15px 20px;
-            display: flex;
-            justify-content: space-between;
-        }
-
-        .header a {
-            color: white;
-            text-decoration: none;
-            margin-left: 20px;
-        }
-
-        .container {
-            max-width: 1200px;
-            margin: 30px auto;
-            padding: 0 20px;
-        }
-
-        .form-box {
-            background: white;
-            padding: 25px;
-            border-radius: 8px;
-            margin-bottom: 30px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
-            border-left: 5px solid #27ae60;
-        }
-
-        input,
-        textarea {
-            width: 100%;
-            padding: 10px;
-            margin: 5px 0 15px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            box-sizing: border-box;
-        }
-
-        label {
-            font-weight: bold;
-            font-size: 14px;
-            color: #555;
-        }
-
-        button.btn-add {
-            background: #27ae60;
-            color: white;
-            border: none;
-            padding: 12px 25px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 16px;
-        }
-
-        button.btn-add:hover {
-            background: #219150;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            background: white;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
-        }
-
-        th {
-            background: #34495e;
-            color: white;
-            padding: 15px;
-            text-align: left;
-        }
-
-        td {
-            padding: 15px;
-            border-bottom: 1px solid #eee;
-            vertical-align: top;
-        }
-
-        tr:hover {
-            background: #f9f9f9;
-        }
-
-        .tag {
-            background: #e1f5fe;
-            color: #0277bd;
-            padding: 3px 8px;
-            border-radius: 12px;
-            font-size: 12px;
-        }
-
-        .del-btn {
-            color: #c0392b;
-            cursor: pointer;
-            text-decoration: none;
-            font-weight: bold;
-        }
-
-        .alert {
-            padding: 15px;
-            background: #f8d7da;
-            color: #721c24;
-            border-radius: 5px;
-            margin-bottom: 20px;
-        }
-
-        .success {
-            padding: 15px;
-            background: #d4edda;
-            color: #155724;
-            border-radius: 5px;
-            margin-bottom: 20px;
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>База Знаний — Админ-панель</title>
+    <link rel="stylesheet" href="/css/admin.css">
 </head>
 
 <body>
-    <div class="header">
-        <div>📚 <b>Управление Базой Знаний</b></div>
-        <div><a href="/">Назад в меню</a></div>
-    </div>
+    <!-- Навигация -->
+    <nav class="nav">
+        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
+        <div class="nav-links">
+            <a href="/" class="nav-link">🏠 Главная</a>
+            <a href="/faq" class="nav-link active">📚 База знаний</a>
+            <a href="/tutors" class="nav-link">👨‍🏫 Тьюторы</a>
+            <a href="/groups" class="nav-link">📌 Группы VK</a>
+            <a href="/broadcast" class="nav-link">📢 Рассылка</a>
+        </div>
+        <div class="nav-right">
+            <a href="/logout" class="nav-logout">🚪 Выход</a>
+        </div>
+    </nav>
 
     <div class="container">
+        <h1 class="page-title">📚 База Знаний</h1>
+
         <% if (error) { %>
-            <div class="alert">
+            <div class="alert alert-error">
                 <%= error %>
             </div>
             <% } %>
                 <% if (success) { %>
-                    <div class="success">
+                    <div class="alert alert-success">
                         <%= success %>
                     </div>
                     <% } %>
 
                         <!-- Форма добавления -->
-                        <div class="form-box">
-                            <h3>➕ Добавить новый вопрос</h3>
+                        <div class="card">
+                            <div class="card-header">➕ Добавить новый вопрос</div>
                             <form action="/faq/add" method="POST">
-                                <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 20px;">
-                                    <div>
+                                <div class="form-row">
+                                    <div class="form-group" style="flex: 1;">
                                         <label>Категория</label>
                                         <input type="text" name="category" placeholder="Например: Стипендия" required>
                                     </div>
-                                    <div>
-                                        <label>Вопрос студента (Официальный)</label>
-                                        <input type="text" name="question" placeholder="Как получить деньги?" required>
+                                    <div class="form-group" style="flex: 2;">
+                                        <label>Вопрос студента</label>
+                                        <input type="text" name="question"
+                                            placeholder="Как получить социальную стипендию?" required>
                                     </div>
                                 </div>
 
-                                <label>Ответ бота</label>
-                                <textarea name="answer" rows="4" placeholder="Текст ответа..." required></textarea>
+                                <div class="form-group">
+                                    <label>Ответ бота</label>
+                                    <textarea name="answer" rows="4"
+                                        placeholder="Для получения социальной стипендии необходимо..."
+                                        required></textarea>
+                                </div>
 
-                                <label>Ключевые слова (Синонимы для поиска) — Скрыты от студента</label>
-                                <input type="text" name="keywords" placeholder="деньги, стипендия, выплата, карта">
+                                <div class="form-group">
+                                    <label>Ключевые слова (синонимы для поиска)</label>
+                                    <input type="text" name="keywords" placeholder="деньги, стипендия, выплата, карта">
+                                </div>
 
-                                <button type="submit" class="btn-add">💾 Сохранить и создать Вектор (Ollama)</button>
+                                <button type="submit" class="btn btn-success">💾 Сохранить и создать Вектор
+                                    (Ollama)</button>
                             </form>
                         </div>
 
-                        <!-- Таблица -->
-                        <h3>Всего вопросов: <%= faq.length %>
-                        </h3>
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th width="5%">ID</th>
-                                    <th width="15%">Категория</th>
-                                    <th width="30%">Вопрос</th>
-                                    <th width="35%">Ответ</th>
-                                    <th width="15%">Действия</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <% faq.forEach(function(item) { %>
-                                    <tr>
-                                        <td>
-                                            <%= item.id %>
-                                        </td>
-                                        <td><span class="tag">
-                                                <%= item.category %>
-                                            </span></td>
-                                        <td>
-                                            <b>
-                                                <%= item.question %>
-                                            </b>
-                                            <% if (item.keywords) { %>
-                                                <br><small style="color: #888;">🔑 <%= item.keywords %></small>
-                                                <% } %>
-                                        </td>
-                                        <td><small>
-                                                <%= item.answer %>
-                                            </small></td>
-                                        <td>
-                                            <!-- КНОПКА РЕДАКТИРОВАНИЯ (НОВАЯ) -->
-                                            <a href="/faq/edit/<%= item.id %>"
-                                                style="text-decoration: none; margin-right: 10px;"
-                                                title="Редактировать">
-                                                ✏️
-                                            </a>
+                        <!-- Таблица FAQ -->
+                        <div
+                            style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <h2 style="color: var(--text-secondary);">Всего вопросов: <%= faq.length %>
+                            </h2>
+                        </div>
 
-                                            <!-- КНОПКА УДАЛЕНИЯ -->
-                                            <form action="/faq/delete/<%= item.id %>" method="POST"
-                                                onsubmit="return confirm('Удалить этот вопрос?');"
-                                                style="display:inline;">
-                                                <button type="submit" class="del-btn"
-                                                    style="background:none; border:none; cursor:pointer;">🗑</button>
-                                            </form>
-                                        </td>
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th width="5%">ID</th>
+                                        <th width="12%">Категория</th>
+                                        <th width="30%">Вопрос</th>
+                                        <th width="38%">Ответ</th>
+                                        <th width="15%">Действия</th>
                                     </tr>
-                                    <% }); %>
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody>
+                                    <% if (faq.length===0) { %>
+                                        <tr>
+                                            <td colspan="5" class="empty-state">
+                                                <div class="icon">📭</div>
+                                                Нет вопросов в базе знаний
+                                            </td>
+                                        </tr>
+                                        <% } else { %>
+                                            <% faq.forEach(function(item) { %>
+                                                <tr>
+                                                    <td>
+                                                        <%= item.id %>
+                                                    </td>
+                                                    <td><span class="badge badge-info">
+                                                            <%= item.category %>
+                                                        </span></td>
+                                                    <td>
+                                                        <b>
+                                                            <%= item.question %>
+                                                        </b>
+                                                        <% if (item.keywords) { %>
+                                                            <br><small style="color: var(--text-muted);">🔑 <%=
+                                                                    item.keywords %></small>
+                                                            <% } %>
+                                                    </td>
+                                                    <td><small>
+                                                            <%= item.answer %>
+                                                        </small></td>
+                                                    <td class="actions">
+                                                        <a href="/faq/edit/<%= item.id %>" class="action-btn edit"
+                                                            title="Редактировать">✏️</a>
+                                                        <form action="/faq/delete/<%= item.id %>" method="POST"
+                                                            onsubmit="return confirm('Удалить этот вопрос?');"
+                                                            style="display:inline;">
+                                                            <button type="submit" class="action-btn delete"
+                                                                title="Удалить">🗑</button>
+                                                        </form>
+                                                    </td>
+                                                </tr>
+                                                <% }); %>
+                                                    <% } %>
+                                </tbody>
+                            </table>
+                        </div>
     </div>
 </body>
 

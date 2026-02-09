@@ -3,112 +3,68 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Рассылка</title>
-    <style>
-        body {
-            font-family: sans-serif;
-            margin: 0;
-            background: #f4f6f8;
-        }
-
-        .header {
-            background: #2c3e50;
-            color: white;
-            padding: 15px 20px;
-            display: flex;
-            justify-content: space-between;
-        }
-
-        .header a {
-            color: white;
-            text-decoration: none;
-            margin-left: 20px;
-        }
-
-        .container {
-            max-width: 800px;
-            margin: 30px auto;
-            padding: 0 20px;
-        }
-
-        .form-box {
-            background: white;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
-            border-top: 5px solid #e67e22;
-        }
-
-        textarea {
-            width: 100%;
-            padding: 15px;
-            margin: 10px 0;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            box-sizing: border-box;
-            font-size: 16px;
-        }
-
-        button.btn-send {
-            background: #e67e22;
-            color: white;
-            border: none;
-            padding: 15px 30px;
-            cursor: pointer;
-            font-size: 18px;
-            width: 100%;
-            border-radius: 4px;
-        }
-
-        button.btn-send:hover {
-            background: #d35400;
-        }
-
-        .info {
-            background: #e1f5fe;
-            color: #0277bd;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Рассылка — Админ-панель</title>
+    <link rel="stylesheet" href="/css/admin.css">
 </head>
 
 <body>
-    <div class="header">
-        <div>📢 <b>Массовая рассылка</b></div>
-        <div><a href="/">Назад в меню</a></div>
-    </div>
+    <!-- Навигация -->
+    <nav class="nav">
+        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
+        <div class="nav-links">
+            <a href="/" class="nav-link">🏠 Главная</a>
+            <a href="/faq" class="nav-link">📚 База знаний</a>
+            <a href="/tutors" class="nav-link">👨‍🏫 Тьюторы</a>
+            <a href="/groups" class="nav-link">📌 Группы VK</a>
+            <a href="/broadcast" class="nav-link active">📢 Рассылка</a>
+        </div>
+        <div class="nav-right">
+            <a href="/logout" class="nav-logout">🚪 Выход</a>
+        </div>
+    </nav>
 
-    <div class="container">
-        <div class="info">
+    <div class="container" style="max-width: 800px;">
+        <h1 class="page-title">📢 Массовая рассылка</h1>
+
+        <div class="info-box">
             ℹ️ Сообщение будет отправлено <b>всем</b> пользователям бота (студентам и тьюторам).<br>
             Рассылка идет постепенно (20 сообщений в секунду), чтобы ВК не заблокировал бота.
         </div>
 
-        <div class="form-box">
+        <div class="card">
             <form action="/broadcast/send" method="POST" onsubmit="return confirm('Вы уверены?');">
 
-                <label><b>Кому отправить?</b></label>
-                <div style="margin: 10px 0 20px;">
-                    <label style="margin-right: 15px;"><input type="radio" name="target" value="all" checked
-                            onclick="toggleGroupInput(false)"> Все пользователи</label>
-                    <label style="margin-right: 15px;"><input type="radio" name="target" value="students"
-                            onclick="toggleGroupInput(false)"> Только Студенты</label>
-                    <label style="margin-right: 15px;"><input type="radio" name="target" value="tutors"
-                            onclick="toggleGroupInput(false)"> Только Тьюторы</label>
-                    <label><input type="radio" name="target" value="group" onclick="toggleGroupInput(true)"> Конкретная
-                        группа</label>
+                <div class="form-group">
+                    <label><b>Кому отправить?</b></label>
+                    <div class="radio-group">
+                        <label class="radio-label">
+                            <input type="radio" name="target" value="all" checked onclick="toggleGroupInput(false)">
+                            Все пользователи
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="target" value="students" onclick="toggleGroupInput(false)">
+                            Только Студенты
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="target" value="tutors" onclick="toggleGroupInput(false)">
+                            Только Тьюторы
+                        </label>
+                        <label class="radio-label">
+                            <input type="radio" name="target" value="group" onclick="toggleGroupInput(true)">
+                            Конкретная группа
+                        </label>
+                    </div>
                 </div>
 
-                <div id="groupInput" style="display: none; margin-bottom: 20px;">
+                <div id="groupInput" style="display: none;" class="form-group">
+                    <label>Номер группы</label>
                     <input type="text" name="group_number" placeholder="Введите номер группы (например, РИ-140944)">
                 </div>
 
-                <div style="margin-bottom: 20px;">
+                <div class="form-group">
                     <label><b>От имени какой группы VK?</b></label>
-                    <select name="vk_group_id"
-                        style="width: 100%; padding: 10px; margin-top: 5px; border: 1px solid #ddd; border-radius: 4px;">
+                    <select name="vk_group_id">
                         <% if (groups && groups.length> 0) { %>
                             <% groups.forEach(function(g) { %>
                                 <option value="<%= g.group_id %>">
@@ -121,18 +77,23 @@
                     </select>
                 </div>
 
-                <label><b>Текст сообщения:</b></label>
-                <textarea name="message" rows="8" placeholder="Уважаемые..." required></textarea>
-                <button type="submit" class="btn-send">🚀 Отправить</button>
+                <div class="form-group">
+                    <label><b>Текст сообщения</b></label>
+                    <textarea name="message" rows="6" placeholder="Уважаемые студенты..." required></textarea>
+                </div>
+
+                <button type="submit" class="btn btn-warning" style="width: 100%; justify-content: center;">
+                    🚀 Отправить рассылку
+                </button>
             </form>
         </div>
-
-        <script>
-            function toggleGroupInput(show) {
-                document.getElementById('groupInput').style.display = show ? 'block' : 'none';
-            }
-        </script>
     </div>
+
+    <script>
+        function toggleGroupInput(show) {
+            document.getElementById('groupInput').style.display = show ? 'block' : 'none';
+        }
+    </script>
 </body>
 
 </html>

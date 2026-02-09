@@ -3,124 +3,55 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Дашборд</title>
-    <style>
-        body {
-            font-family: sans-serif;
-            margin: 0;
-            background: #f4f6f8;
-        }
-
-        .header {
-            background: #2c3e50;
-            color: white;
-            padding: 15px 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .header a {
-            color: #ecf0f1;
-            text-decoration: none;
-            margin-left: 20px;
-            font-weight: bold;
-        }
-
-        .container {
-            max-width: 1000px;
-            margin: 30px auto;
-            padding: 0 20px;
-        }
-
-        .card {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
-            text-align: center;
-        }
-
-        .big-number {
-            font-size: 48px;
-            color: #27ae60;
-            font-weight: bold;
-            margin: 10px 0;
-        }
-
-        .menu-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-top: 30px;
-        }
-
-        .menu-item {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            text-align: center;
-            text-decoration: none;
-            color: #333;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
-            transition: 0.2s;
-        }
-
-        .menu-item:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
-        }
-
-        .icon {
-            font-size: 40px;
-            display: block;
-            margin-bottom: 10px;
-        }
-
-        .text-green {
-            color: #27ae60;
-        }
-
-        .text-red {
-            color: #e74c3c;
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Дашборд — Админ-панель</title>
+    <link rel="stylesheet" href="/css/admin.css">
 </head>
 
 <body>
-    <div class="header">
-        <div>🤖 <b>Admin Panel</b></div>
-        <div>
-            <a href="/">Главная</a>
-            <a href="/logout">Выход</a>
+    <!-- Навигация -->
+    <nav class="nav">
+        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
+        <div class="nav-links">
+            <a href="/" class="nav-link active">🏠 Главная</a>
+            <a href="/faq" class="nav-link">📚 База знаний</a>
+            <a href="/tutors" class="nav-link">👨‍🏫 Тьюторы</a>
+            <a href="/groups" class="nav-link">📌 Группы VK</a>
+            <a href="/broadcast" class="nav-link">📢 Рассылка</a>
         </div>
-    </div>
+        <div class="nav-right">
+            <a href="/logout" class="nav-logout">🚪 Выход</a>
+        </div>
+    </nav>
 
     <div class="container">
-        <h1>Обзор системы</h1>
+        <h1 class="page-title">📊 Обзор системы</h1>
 
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px;">
-            <div class="card">
+        <!-- Статистика -->
+        <div class="stats-grid">
+            <div class="stat-card">
                 <h3>Обращений (Тикетов)</h3>
-                <div class="big-number">
+                <div class="stat-number">
                     <%= count %>
                 </div>
             </div>
-            <div class="card">
+            <div class="stat-card">
                 <h3>Активных ботов</h3>
-                <div class="big-number <%= botsCount > 0 ? 'text-green' : 'text-red' %>">
+                <div class="stat-number <%= botsCount > 0 ? 'success' : 'danger' %>">
                     <%= botsCount %>
                 </div>
             </div>
-            <div class="card">
+            <div class="stat-card">
                 <h3>Статус Ollama</h3>
-                <div class="big-number <%= ollamaStatus === 'Активна' ? 'text-green' : 'text-red' %>"
-                    style="font-size: 24px;">
+                <div class="stat-number <%= ollamaStatus === 'Активна' ? 'success' : 'danger' %>"
+                    style="font-size: 1.5rem;">
                     <%= ollamaStatus %>
                 </div>
             </div>
         </div>
 
+        <!-- Меню быстрого доступа -->
+        <h2 style="color: var(--text-secondary); margin-bottom: 20px;">Быстрый доступ</h2>
         <div class="menu-grid">
             <a href="/faq" class="menu-item">
                 <span class="icon">📚</span>

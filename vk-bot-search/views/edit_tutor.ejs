@@ -3,79 +3,54 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Редактирование Тьютора</title>
-    <style>
-        body {
-            font-family: sans-serif;
-            margin: 0;
-            background: #f4f6f8;
-        }
-
-        .container {
-            max-width: 600px;
-            margin: 50px auto;
-            padding: 20px;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
-            border-top: 5px solid #8e44ad;
-        }
-
-        input {
-            width: 100%;
-            padding: 10px;
-            margin: 5px 0 15px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            box-sizing: border-box;
-        }
-
-        label {
-            font-weight: bold;
-            font-size: 14px;
-            color: #555;
-        }
-
-        button {
-            padding: 12px 25px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 16px;
-            border: none;
-            color: white;
-            background: #8e44ad;
-        }
-
-        button:hover {
-            background: #732d91;
-        }
-
-        .cancel {
-            color: #7f8c8d;
-            text-decoration: none;
-            margin-left: 20px;
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Редактирование Тьютора — Админ-панель</title>
+    <link rel="stylesheet" href="/css/admin.css">
 </head>
 
 <body>
-    <div class="container">
-        <h2>✏️ Редактирование доступа</h2>
-        <form action="/tutors/edit/<%= tutor.code %>" method="POST">
+    <!-- Навигация -->
+    <nav class="nav">
+        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
+        <div class="nav-links">
+            <a href="/" class="nav-link">🏠 Главная</a>
+            <a href="/faq" class="nav-link">📚 База знаний</a>
+            <a href="/tutors" class="nav-link active">👨‍🏫 Тьюторы</a>
+            <a href="/groups" class="nav-link">📌 Группы VK</a>
+            <a href="/broadcast" class="nav-link">📢 Рассылка</a>
+        </div>
+        <div class="nav-right">
+            <a href="/logout" class="nav-logout">🚪 Выход</a>
+        </div>
+    </nav>
 
-            <label>Код доступа (Нельзя изменить)</label>
-            <input type="text" value="<%= tutor.code %>" disabled style="background: #eee; cursor: not-allowed;">
+    <div class="container" style="max-width: 600px;">
+        <h1 class="page-title">✏️ Редактирование доступа</h1>
 
-            <label>ФИО Тьютора</label>
-            <input type="text" name="name" value="<%= tutor.tutor_name %>" required>
+        <div class="card">
+            <form action="/tutors/edit/<%= tutor.code %>" method="POST">
+                <div class="form-group">
+                    <label>Код доступа (Нельзя изменить)</label>
+                    <input type="text" value="<%= tutor.code %>" disabled style="opacity: 0.6; cursor: not-allowed;">
+                </div>
 
-            <label>Группы (через запятую)</label>
-            <!-- Превращаем массив обратно в строку для редактирования -->
-            <input type="text" name="groups" value="<%= tutor.allowed_groups.join(', ') %>" required>
+                <div class="form-group">
+                    <label>ФИО Тьютора</label>
+                    <input type="text" name="name" value="<%= tutor.tutor_name %>" required>
+                </div>
 
-            <button type="submit">💾 Сохранить</button>
-            <a href="/tutors" class="cancel">Отмена</a>
-        </form>
+                <div class="form-group">
+                    <label>Группы (через запятую)</label>
+                    <input type="text" name="groups" value="<%= tutor.allowed_groups.join(', ') %>" required>
+                </div>
+
+                <div style="display: flex; gap: 15px; margin-top: 20px;">
+                    <button type="submit" class="btn btn-primary" style="background: var(--purple);">💾
+                        Сохранить</button>
+                    <a href="/tutors" class="btn btn-danger" style="text-decoration: none;">Отмена</a>
+                </div>
+            </form>
+        </div>
     </div>
 </body>
 
