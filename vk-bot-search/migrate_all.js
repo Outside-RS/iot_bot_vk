@@ -57,7 +57,8 @@ async function runMigration() {
             CREATE TABLE operator_codes (
                 code TEXT PRIMARY KEY,
                 tutor_name TEXT NOT NULL,
-                allowed_groups TEXT[]
+                allowed_groups TEXT[],
+                max_course INTEGER DEFAULT 4
             );
 
             CREATE TABLE users (

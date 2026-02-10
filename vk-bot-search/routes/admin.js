@@ -73,8 +73,8 @@ router.get('/faq', requireAuth, noCache, async (req, res) => {
         const result = await db.query('SELECT * FROM faq ORDER BY id DESC');
         res.render('faq', {
             faq: result.rows,
-            error: null,
-            success: null
+            error: req.query.error || null,
+            success: req.query.success || null
         });
     } catch (e) {
         res.send('Ошибка: ' + e.message);
@@ -92,14 +92,8 @@ router.post('/faq/add', requireAuth, noCache, async (req, res) => {
         const vector = await getEmbedding(textForVector);
 
         if (!vector) {
-            // Если Ollama не ответила, мы НЕ сохраняем вопрос, чтобы не портить базу
-            // Либо можно сохранить, но предупредить. Давай не сохранять для надежности.
-            const result = await db.query('SELECT * FROM faq ORDER BY id DESC');
-            return res.render('faq', {
-                faq: result.rows,
-                error: '❌ Ошибка Ollama: Вектор не создан. Проверьте, запущена ли нейросеть.',
-                success: null
-            });
+            // Если Ollama не ответила, редирект с ошибкой
+            return res.redirect('/faq?error=' + encodeURIComponent('❌ Ошибка Ollama: Вектор не создан. Проверьте, запущена ли нейросеть.'));
         }
 
         // 2. Сохраняем в базу
@@ -108,16 +102,11 @@ router.post('/faq/add', requireAuth, noCache, async (req, res) => {
             [category, question, answer, keywords, JSON.stringify(vector)]
         );
 
-        // 3. Перезагружаем страницу с успехом
-        const result = await db.query('SELECT * FROM faq ORDER BY id DESC');
-        res.render('faq', {
-            faq: result.rows,
-            error: null,
-            success: '✅ Вопрос успешно добавлен и индексирован!'
-        });
+        // 3. Редирект с успехом (PRG паттерн)
+        res.redirect('/faq?success=' + encodeURIComponent('✅ Вопрос успешно добавлен!'));
 
     } catch (e) {
-        res.send('Ошибка сохранения: ' + e.message);
+        res.redirect('/faq?error=' + encodeURIComponent('Ошибка сохранения: ' + e.message));
     }
 });
 
@@ -188,14 +177,14 @@ router.get('/tutors/edit/:code', requireAuth, noCache, async (req, res) => {
 
 // Сохранение тьютора
 router.post('/tutors/edit/:code', requireAuth, async (req, res) => {
-    const { name, groups } = req.body;
+    const { name, groups, max_course } = req.body;
     try {
         const groupArray = groups.split(',').map(s => s.trim().toUpperCase());
         const pgArray = `{${groupArray.join(',')}}`;
 
         await db.query(
-            'UPDATE operator_codes SET tutor_name = $1, allowed_groups = $2 WHERE code = $3',
-            [name, pgArray, req.params.code]
+            'UPDATE operator_codes SET tutor_name = $1, allowed_groups = $2, max_course = $3 WHERE code = $4',
+            [name, pgArray, parseInt(max_course) || 4, req.params.code]
         );
         res.redirect('/tutors');
     } catch (e) {
@@ -213,15 +202,15 @@ router.get('/tutors', requireAuth, noCache, async (req, res) => {
 });
 
 router.post('/tutors/add', requireAuth, noCache, async (req, res) => {
-    const { name, groups, code } = req.body;
+    const { name, groups, code, max_course } = req.body;
     try {
         // Превращаем строку "РИ-101, РИ-102" в массив для Postgres: "{РИ-101,РИ-102}"
         const groupArray = groups.split(',').map(s => s.trim().toUpperCase());
         const pgArray = `{${groupArray.join(',')}}`;
 
         await db.query(
-            'INSERT INTO operator_codes (code, tutor_name, allowed_groups) VALUES ($1, $2, $3)',
-            [code, name, pgArray]
+            'INSERT INTO operator_codes (code, tutor_name, allowed_groups, max_course) VALUES ($1, $2, $3, $4)',
+            [code, name, pgArray, parseInt(max_course) || 4]
         );
         res.redirect('/tutors');
     } catch (e) {
@@ -584,12 +573,35 @@ router.post('/users/promote-all', requireAuth, noCache, async (req, res) => {
             }
         }
 
-        // Обновляем группы у тьюторов тоже
-        const tutors = await db.query('SELECT code, allowed_groups FROM operator_codes');
+        // Собираем список старых групп, которые были переведены
+        const promotedGroups = new Set();
+        for (const user of result.rows) {
+            if (user.group_number) promotedGroups.add(user.group_number);
+        }
+
+        // Обновляем группы у тьюторов — только те, что совпадают с переведёнными
+        const tutors = await db.query('SELECT code, allowed_groups, max_course FROM operator_codes');
         for (const tutor of tutors.rows) {
             if (tutor.allowed_groups && tutor.allowed_groups.length > 0) {
-                const newGroups = tutor.allowed_groups.map(g => promoteCourse(g));
-                await db.query('UPDATE operator_codes SET allowed_groups = $1 WHERE code = $2', [newGroups, tutor.code]);
+                const maxCourse = tutor.max_course || 4;
+                let changed = false;
+                const newGroups = tutor.allowed_groups
+                    .map(g => {
+                        if (promotedGroups.has(g)) {
+                            changed = true;
+                            return promoteCourse(g);
+                        }
+                        return g;
+                    })
+                    .filter(g => {
+                        // Убираем группы, превысившие max_course
+                        const courseMatch = g ? g.match(/-(\d)/) : null;
+                        const course = courseMatch ? parseInt(courseMatch[1]) : 1;
+                        return course <= maxCourse;
+                    });
+                if (changed || newGroups.length !== tutor.allowed_groups.length) {
+                    await db.query('UPDATE operator_codes SET allowed_groups = $1 WHERE code = $2', [newGroups, tutor.code]);
+                }
             }
         }
 

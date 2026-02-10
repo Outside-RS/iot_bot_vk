@@ -41,6 +41,10 @@
                         <label>Привязка к группам (через запятую)</label>
                         <input type="text" name="groups" placeholder="РИ-101, РИ-102" required>
                     </div>
+                    <div class="form-group" style="flex: 0.5;">
+                        <label>Макс. курс</label>
+                        <input type="number" name="max_course" value="4" min="1" max="6" required>
+                    </div>
                     <div class="form-group">
                         <label>Придумайте Код</label>
                         <input type="text" name="code" placeholder="SECRET-123" required>
@@ -63,13 +67,14 @@
                         <th>Код доступа</th>
                         <th>ФИО Владельца</th>
                         <th>Группы</th>
+                        <th>Макс. курс</th>
                         <th>Действия</th>
                     </tr>
                 </thead>
                 <tbody>
                     <% if (tutors.length===0) { %>
                         <tr>
-                            <td colspan="4" class="empty-state">
+                            <td colspan="5" class="empty-state">
                                 <div class="icon">👤</div>
                                 Нет созданных кодов доступа
                             </td>
@@ -85,6 +90,7 @@
                                     </td>
                                     <td>
                                         <%= t.allowed_groups ? t.allowed_groups.join(', ') : '' %></td>
+                                    <td><span class="badge badge-info"><%= t.max_course || 4 %></span></td>
                                 <td class="actions">
                                     <a href="/tutors/edit/<%= t.code %>" class="action-btn edit" title="Редактировать">✏️</a>
                                     <form action="/tutors/delete/<%= t.code %>" method="POST" 

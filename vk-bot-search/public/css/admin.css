@@ -14,12 +14,12 @@
     --bg-primary: #1a1a2e;
     --bg-secondary: #16213e;
     --bg-tertiary: #0f3460;
-    
+
     /* Текст */
     --text-primary: #eee;
     --text-secondary: #aaa;
     --text-muted: #666;
-    
+
     /* Акценты */
     --accent: #4fc3f7;
     --accent-hover: #81d4fa;
@@ -30,7 +30,7 @@
     --warning: #ff9800;
     --purple: #8e44ad;
     --orange: #e67e22;
-    
+
     /* Отступы */
     --radius: 8px;
     --radius-lg: 12px;
@@ -194,9 +194,17 @@ a:hover {
     color: var(--accent);
 }
 
-.stat-number.success { color: var(--success); }
-.stat-number.danger { color: var(--danger); }
-.stat-number.warning { color: var(--warning); }
+.stat-number.success {
+    color: var(--success);
+}
+
+.stat-number.danger {
+    color: var(--danger);
+}
+
+.stat-number.warning {
+    color: var(--warning);
+}
 
 /* === МЕНЮ-СЕТКА (Dashboard) === */
 .menu-grid {
@@ -351,13 +359,14 @@ textarea {
 .table-container {
     background: var(--bg-secondary);
     border-radius: var(--radius-lg);
-    overflow: hidden;
+    overflow-x: auto;
     box-shadow: var(--shadow);
 }
 
 table {
     width: 100%;
     border-collapse: collapse;
+    table-layout: fixed;
 }
 
 thead {
@@ -372,12 +381,15 @@ th {
     font-size: 0.85rem;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    white-space: nowrap;
 }
 
 td {
     padding: 15px;
     border-bottom: 1px solid var(--bg-tertiary);
     vertical-align: middle;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
 }
 
 tbody tr {
@@ -428,10 +440,9 @@ tbody tr:last-child td {
 
 /* === КНОПКИ ДЕЙСТВИЙ === */
 .actions {
-    display: flex;
-    gap: 8px;
-    align-items: center;
+    white-space: nowrap;
 }
+
 
 .action-btn {
     background: none;
@@ -447,9 +458,17 @@ tbody tr:last-child td {
     background: var(--bg-tertiary);
 }
 
-.action-btn.edit:hover { color: var(--accent); }
-.action-btn.delete:hover { color: var(--danger); }
-.action-btn.toggle:hover { color: var(--warning); }
+.action-btn.edit:hover {
+    color: var(--accent);
+}
+
+.action-btn.delete:hover {
+    color: var(--danger);
+}
+
+.action-btn.toggle:hover {
+    color: var(--warning);
+}
 
 /* === АЛЕРТЫ / УВЕДОМЛЕНИЯ === */
 .alert {
@@ -467,6 +486,7 @@ tbody tr:last-child td {
         opacity: 0;
         transform: translateY(-10px);
     }
+
     to {
         opacity: 1;
         transform: translateY(0);
@@ -563,38 +583,39 @@ tbody tr:last-child td {
         flex-direction: column;
         padding: 10px;
     }
-    
+
     .nav-links {
         flex-wrap: wrap;
         justify-content: center;
     }
-    
+
     .nav-link {
         padding: 10px 12px;
         font-size: 13px;
     }
-    
+
     .container {
         padding: 20px 15px;
     }
-    
+
     .stats-grid {
         grid-template-columns: 1fr 1fr;
     }
-    
+
     .form-row {
         flex-direction: column;
     }
-    
+
     .form-group {
         min-width: 100%;
     }
-    
+
     table {
         font-size: 13px;
     }
-    
-    th, td {
+
+    th,
+    td {
         padding: 10px;
     }
 }
@@ -603,7 +624,7 @@ tbody tr:last-child td {
     .stats-grid {
         grid-template-columns: 1fr;
     }
-    
+
     .menu-grid {
         grid-template-columns: 1fr;
     }
