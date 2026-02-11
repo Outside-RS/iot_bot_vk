@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { db, getEmbedding } = require('../database');
+const { db } = require('../database');
 const createBotInstance = require('../bot');
 
 // Проверка авторизации
@@ -86,20 +86,10 @@ router.post('/faq/add', requireAuth, noCache, async (req, res) => {
     const { category, question, answer, keywords } = req.body;
 
     try {
-        // 1. Генерируем вектор
-        // Склеиваем вопрос и ключевые слова для лучшего поиска
-        const textForVector = question + (keywords ? " " + keywords : "");
-        const vector = await getEmbedding(textForVector);
-
-        if (!vector) {
-            // Если Ollama не ответила, редирект с ошибкой
-            return res.redirect('/faq?error=' + encodeURIComponent('❌ Ошибка Ollama: Вектор не создан. Проверьте, запущена ли нейросеть.'));
-        }
-
-        // 2. Сохраняем в базу
+        // 2. Сохраняем в базу (tsvector генерируется сам)
         await db.query(
-            `INSERT INTO faq (category, question, answer, keywords, embedding) VALUES ($1, $2, $3, $4, $5)`,
-            [category, question, answer, keywords, JSON.stringify(vector)]
+            `INSERT INTO faq (category, question, answer, keywords) VALUES ($1, $2, $3, $4)`,
+            [category, question, answer, keywords]
         );
 
         // 3. Редирект с успехом (PRG паттерн)
@@ -141,19 +131,11 @@ router.post('/faq/edit/:id', requireAuth, noCache, async (req, res) => {
     const id = req.params.id;
 
     try {
-        // Обязательно генерируем новый вектор, так как текст вопроса мог измениться
-        const textForVector = question + (keywords ? " " + keywords : "");
-        const vector = await getEmbedding(textForVector);
-
-        if (!vector) {
-            return res.send('❌ Ошибка: Не удалось обновить вектор (Ollama не отвечает). Изменения не сохранены, чтобы не ломать поиск.');
-        }
-
         await db.query(
             `UPDATE faq 
-             SET category = $1, question = $2, answer = $3, keywords = $4, embedding = $5
-             WHERE id = $6`,
-            [category, question, answer, keywords, JSON.stringify(vector), id]
+             SET category = $1, question = $2, answer = $3, keywords = $4
+             WHERE id = $5`,
+            [category, question, answer, keywords, id]
         );
 
         res.redirect('/faq'); // Возвращаемся к списку

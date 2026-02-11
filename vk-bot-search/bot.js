@@ -1,6 +1,6 @@
 // bot.js
 const { VK, Keyboard } = require('vk-io');
-const { db, getEmbedding } = require('./database');
+const { db } = require('./database');
 
 // Логи
 const log = (msg) => console.log(`[Bot] ${msg}`);
@@ -159,40 +159,91 @@ async function processState(context, user, vk) {
             break;
 
         case 'ask_question_mode':
-            if (text === '🏠 В меню' || text === '🔙 Назад' || ['✉️ Задать вопрос', '👤 Профиль', '🗂 Мои обращения'].includes(text)) { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); return mainMenu(context, user); }
-            const kwRes = await db.query(`SELECT id, question, answer FROM faq WHERE search_vector @@ websearch_to_tsquery('russian', $1) LIMIT 8`, [text]);
-            if (kwRes.rows.length > 0) {
-                if (kwRes.rows.length === 1) {
-                    await context.send({ message: `📚 ${kwRes.rows[0].question}\n\n${kwRes.rows[0].answer}`, keyboard: Keyboard.builder().textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text }, color: Keyboard.POSITIVE_COLOR }).row().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).oneTime() });
-                    return;
-                } else {
-                    let kb = Keyboard.builder();
-                    kwRes.rows.forEach((r, i) => kb.textButton({ label: `${i + 1}. ${r.question.substring(0, 30)}...`, payload: { command: 'show_faq_answer', faq_id: r.id }, color: Keyboard.PRIMARY_COLOR }).row());
-                    kb.textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text }, color: Keyboard.POSITIVE_COLOR }).row().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR });
-                    await context.send({ message: '🔎 Нашел по словам:', keyboard: kb.oneTime() });
-                    return;
-                }
+            // 0. Навигация
+            if (text === '🏠 В меню' || text === '🔙 Назад' || ['✉️ Задать вопрос', '👤 Профиль', '🗂 Мои обращения'].includes(text)) {
+                await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
+                return mainMenu(context, user);
             }
-            await context.send('🔍 Ищу по смыслу...');
-            const vec = await getEmbedding(text);
-            if (vec) {
-                const semRes = await db.query(`SELECT id, question, answer, (embedding <=> $1) as distance FROM faq ORDER BY distance ASC LIMIT 8`, [JSON.stringify(vec)]);
-                if (semRes.rows.length > 0 && semRes.rows[0].distance < 0.45) {
-                    if (semRes.rows[0].distance < 0.2) {
-                        await context.send({ message: `💡 ${semRes.rows[0].question}\n\n${semRes.rows[0].answer}`, keyboard: Keyboard.builder().textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text }, color: Keyboard.POSITIVE_COLOR }).row().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).oneTime() });
+
+            console.log(`[SEARCH] Запрос: "${text}"`);
+
+            // 1. ЕДИНЫЙ ПОИСК (Лексика + Нечеткий)
+            // - plainto_tsquery('russian', text) -> превращает "где получить" в "где & получить"
+            // - regexp_replace(..., '&', '|', 'g') -> превращает "где & получить" в "где | получить" (ИЛИ)
+            // - similarity(..., text) -> сравнивает триграммы (опечатки)
+            // - ts_rank -> ранжирует по частоте слов
+            const sqlQuery = `
+                SELECT id, question, answer,
+                    (ts_rank(search_vector, to_tsquery('russian', regexp_replace(plainto_tsquery('russian', $1)::text, '&', '|', 'g'))) * 1.0 +
+                     similarity(question || ' ' || COALESCE(keywords, ''), $1) * 0.5) AS score
+                FROM faq
+                WHERE search_vector @@ to_tsquery('russian', regexp_replace(plainto_tsquery('russian', $1)::text, '&', '|', 'g'))
+                   OR similarity(question || ' ' || COALESCE(keywords, ''), $1) > 0.1
+                ORDER BY score DESC
+                LIMIT 5;
+            `;
+
+            try {
+                const res = await db.query(sqlQuery, [text]);
+
+                // Фильтруем мусор (хотя WHERE уже фильтрует, но на всякий случай берем топ)
+                const hits = res.rows.filter(r => r.score > 0.05);
+
+                if (hits.length > 0) {
+                    console.log(`[SEARCH] Found ${hits.length} results. Top: "${hits[0].question}" (${hits[0].score})`);
+
+                    const best = hits[0];
+
+                    // Если один явный лидер (или всего один результат) -> Показываем сразу ответ
+                    // Условие лидера: его счет в 1.5 раза больше второго места
+                    const isLeader = hits.length === 1 || (hits[1] && best.score > hits[1].score * 1.5);
+
+                    if (isLeader) {
+                        await context.send({
+                            message: `📚 ${best.question}\n\n${best.answer}`,
+                            keyboard: Keyboard.builder()
+                                .textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text }, color: Keyboard.POSITIVE_COLOR })
+                                .row()
+                                .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR })
+                                .oneTime()
+                        });
                         return;
                     }
+
+                    // Иначе предлагаем варианты (до 5 кнопок)
                     let kb = Keyboard.builder();
-                    let found = false;
-                    semRes.rows.forEach((r, i) => { if (r.distance < 0.5) { found = true; kb.textButton({ label: `${i + 1}. ${r.question.substring(0, 30)}...`, payload: { command: 'show_faq_answer', faq_id: r.id }, color: Keyboard.PRIMARY_COLOR }).row(); } });
-                    if (found) {
-                        kb.textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text }, color: Keyboard.POSITIVE_COLOR }).row().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR });
-                        await context.send({ message: '💡 Возможно, вы имели в виду:', keyboard: kb.oneTime() });
-                        return;
-                    }
+                    hits.forEach((r, i) => {
+                        kb.textButton({
+                            label: `${i + 1}. ${r.question.substring(0, 30).replace(/\n/g, ' ')}...`,
+                            payload: { command: 'show_faq_answer', faq_id: r.id },
+                            color: Keyboard.PRIMARY_COLOR
+                        }).row();
+                    });
+
+                    kb.textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text }, color: Keyboard.POSITIVE_COLOR })
+                        .row()
+                        .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR });
+
+                    await context.send({
+                        message: '🔎 Нашел несколько вариантов:',
+                        keyboard: kb.oneTime()
+                    });
+                    return;
                 }
+            } catch (err) {
+                console.error('[SEARCH] Error:', err);
             }
-            await context.send({ message: 'Не нашел. Передать тьютору?', keyboard: Keyboard.builder().textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text }, color: Keyboard.POSITIVE_COLOR }).row().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).oneTime() });
+
+            // Если ничего не нашли
+            console.log('[SEARCH] Ничего не найдено.');
+            await context.send({
+                message: 'Не нашел ответа в базе знаний. Передать вопрос тьютору?',
+                keyboard: Keyboard.builder()
+                    .textButton({ label: '✉️ Передать вопрос тьютору', payload: { command: 'confirm_send', question: text }, color: Keyboard.POSITIVE_COLOR })
+                    .row()
+                    .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR })
+                    .oneTime()
+            });
             break;
 
         case 'main_menu':

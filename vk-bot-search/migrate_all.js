@@ -11,26 +11,13 @@ const db = new Client({
     port: process.env.DB_PORT || 5432,
 });
 
-async function getEmbedding(text) {
-    try {
-        const response = await fetch('http://127.0.0.1:11434/api/embeddings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: 'nomic-embed-text', prompt: text })
-        });
-        const data = await response.json();
-        return data.embedding;
-    } catch (e) {
-        return null;
-    }
-}
-
 async function runMigration() {
     try {
         await db.connect();
         console.log('Подключение к БД...');
 
-        await db.query('CREATE EXTENSION IF NOT EXISTS vector;');
+        // Включаем расширение для нечеткого поиска (триграммы)
+        await db.query('CREATE EXTENSION IF NOT EXISTS pg_trgm;');
 
         console.log('Очистка таблиц...');
         await db.query(`
@@ -80,19 +67,22 @@ async function runMigration() {
                 category TEXT,
                 question TEXT NOT NULL,
                 answer TEXT NOT NULL,
-                keywords TEXT, -- НОВОЕ ПОЛЕ: Скрытые теги
+                keywords TEXT,
                 
-                -- ОБНОВЛЕННЫЙ ИНДЕКС: Ищем в вопросе + ответе + ключевых словах
+                -- ИНДЕКС: Ищем ТОЛЬКО в вопросе + ключевых словах (ответ исключен)
                 -- COALESCE нужен, чтобы если keywords пустые, поиск не ломался
                 search_vector TSVECTOR GENERATED ALWAYS AS (
-                    to_tsvector('russian', question || ' ' || answer || ' ' || COALESCE(keywords, ''))
-                ) STORED,
-                
-                embedding vector(768)
+                    to_tsvector('russian', question || ' ' || COALESCE(keywords, ''))
+                ) STORED
             );
             
+            -- Индекс для полнотекстового поиска
             CREATE INDEX faq_search_idx ON faq USING GIN (search_vector);
-            -- Индекс для векторов убран (для точности на малых данных)
+            
+            -- НОВЫЙ ИНДЕКС: Для нечеткого поиска (trigrams)
+            CREATE INDEX faq_trgm_idx ON faq USING GIN (
+                (question || ' ' || COALESCE(keywords, '')) gin_trgm_ops
+            );
 
             CREATE TABLE tickets (
                 id SERIAL PRIMARY KEY,
@@ -130,20 +120,16 @@ async function runMigration() {
             const faqData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
 
             for (const item of faqData) {
-                // Генерируем вектор только по вопросу (или вопрос + ключевые слова, чтобы улучшить и векторный поиск тоже)
-                // Превращаем массив в строку, если это массив
                 const keywordsStr = Array.isArray(item.keywords) ? item.keywords.join(' ') : (item.keywords || '');
-                const textForVector = item.question + " " + keywordsStr;
-                const vector = await getEmbedding(textForVector);
 
                 await db.query(
-                    `INSERT INTO faq (category, question, answer, keywords, embedding) VALUES ($1, $2, $3, $4, $5)`,
-                    [item.category, item.question, item.answer, keywordsStr, vector ? JSON.stringify(vector) : null]
+                    `INSERT INTO faq (category, question, answer, keywords) VALUES ($1, $2, $3, $4)`,
+                    [item.category, item.question, item.answer, keywordsStr]
                 );
             }
         }
 
-        console.log('ГОТОВО! База обновлена (Keywords + No Index).');
+        console.log('ГОТОВО! База обновлена (Opt: NoVectors, NoAnswersInSearch, PgTrgm).');
 
     } catch (err) {
         console.error('Ошибка:', err);
