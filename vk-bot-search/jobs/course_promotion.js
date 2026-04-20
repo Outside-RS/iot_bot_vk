@@ -49,30 +49,11 @@ async function promoteAllUsers() {
             }
         }
 
-        // 2. Переводим группы тьюторов (с учетом max_course)
-        const tutors = await db.query('SELECT code, allowed_groups, max_course FROM operator_codes');
-        let tutorsUpdated = 0;
-
-        for (const tutor of tutors.rows) {
-            if (tutor.allowed_groups && tutor.allowed_groups.length > 0) {
-                const maxCourse = tutor.max_course || 4;
-                const newGroups = tutor.allowed_groups
-                    .map(g => promoteCourse(g))
-                    .filter(g => {
-                        // Убираем группы, превысившие max_course
-                        const courseMatch = g ? g.match(/-(\d)/) : null;
-                        const course = courseMatch ? parseInt(courseMatch[1]) : 1;
-                        return course <= maxCourse;
-                    });
-                await db.query('UPDATE operator_codes SET allowed_groups = $1 WHERE code = $2', [newGroups, tutor.code]);
-                tutorsUpdated++;
-            }
-        }
+        // Обновление групп у администраторов больше не требуется (нет привязки к группам)
 
         console.log(`✅ [АВТО-ПЕРЕВОД] Завершено!`);
         console.log(`   - Переведено студентов: ${promoted}`);
         console.log(`   - Выпущено: ${graduated}`);
-        console.log(`   - Тьюторов обновлено: ${tutorsUpdated}`);
 
     } catch (err) {
         console.error('❌ [АВТО-ПЕРЕВОД] Ошибка:', err.message);

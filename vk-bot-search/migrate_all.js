@@ -43,9 +43,7 @@ async function runMigration() {
 
             CREATE TABLE operator_codes (
                 code TEXT PRIMARY KEY,
-                tutor_name TEXT NOT NULL,
-                allowed_groups TEXT[],
-                max_course INTEGER DEFAULT 4
+                admin_name TEXT NOT NULL
             );
 
             CREATE TABLE users (
@@ -59,6 +57,7 @@ async function runMigration() {
                 study_years INTEGER DEFAULT 4,
                 vk_group_id BIGINT,
                 is_graduated BOOLEAN DEFAULT FALSE,
+                ai_context JSONB DEFAULT '[]',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -106,10 +105,10 @@ async function runMigration() {
             CREATE INDEX idx_messages_ticket ON messages(ticket_id);
         `);
 
-        // Тестовый тьютор
+        // Тестовый администратор
         await db.query(`
-            INSERT INTO operator_codes (code, tutor_name, allowed_groups)
-            VALUES ('TUTOR-IOT', 'Иванова Анна Павловна', '{"РИ-140944", "РИ-140945"}')
+            INSERT INTO operator_codes (code, admin_name)
+            VALUES ('ADMIN-MAIN', 'Администратор')
             ON CONFLICT DO NOTHING;
         `);
 

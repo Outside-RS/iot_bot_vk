@@ -144,9 +144,9 @@ router.post('/faq/edit/:id', requireAuth, noCache, async (req, res) => {
     }
 });
 
-// === ТЬЮТОРЫ ===
+// === АДМИНИСТРАТОРЫ ===
 
-// Страница редактирования тьютора
+// Страница редактирования администратора
 router.get('/tutors/edit/:code', requireAuth, noCache, async (req, res) => {
     try {
         const result = await db.query('SELECT * FROM operator_codes WHERE code = $1', [req.params.code]);
@@ -157,16 +157,13 @@ router.get('/tutors/edit/:code', requireAuth, noCache, async (req, res) => {
     }
 });
 
-// Сохранение тьютора
+// Сохранение администратора
 router.post('/tutors/edit/:code', requireAuth, async (req, res) => {
-    const { name, groups, max_course } = req.body;
+    const { name } = req.body;
     try {
-        const groupArray = groups.split(',').map(s => s.trim().toUpperCase());
-        const pgArray = `{${groupArray.join(',')}}`;
-
         await db.query(
-            'UPDATE operator_codes SET tutor_name = $1, allowed_groups = $2, max_course = $3 WHERE code = $4',
-            [name, pgArray, parseInt(max_course) || 4, req.params.code]
+            'UPDATE operator_codes SET admin_name = $1 WHERE code = $2',
+            [name, req.params.code]
         );
         res.redirect('/tutors');
     } catch (e) {
@@ -184,15 +181,11 @@ router.get('/tutors', requireAuth, noCache, async (req, res) => {
 });
 
 router.post('/tutors/add', requireAuth, noCache, async (req, res) => {
-    const { name, groups, code, max_course } = req.body;
+    const { name, code } = req.body;
     try {
-        // Превращаем строку "РИ-101, РИ-102" в массив для Postgres: "{РИ-101,РИ-102}"
-        const groupArray = groups.split(',').map(s => s.trim().toUpperCase());
-        const pgArray = `{${groupArray.join(',')}}`;
-
         await db.query(
-            'INSERT INTO operator_codes (code, tutor_name, allowed_groups, max_course) VALUES ($1, $2, $3, $4)',
-            [code, name, pgArray, parseInt(max_course) || 4]
+            'INSERT INTO operator_codes (code, admin_name) VALUES ($1, $2)',
+            [code, name]
         );
         res.redirect('/tutors');
     } catch (e) {
@@ -555,39 +548,9 @@ router.post('/users/promote-all', requireAuth, noCache, async (req, res) => {
             }
         }
 
-        // Собираем список старых групп, которые были переведены
-        const promotedGroups = new Set();
-        for (const user of result.rows) {
-            if (user.group_number) promotedGroups.add(user.group_number);
-        }
+        // Обновление групп у администраторов больше не требуется (нет привязки к группам)
 
-        // Обновляем группы у тьюторов — только те, что совпадают с переведёнными
-        const tutors = await db.query('SELECT code, allowed_groups, max_course FROM operator_codes');
-        for (const tutor of tutors.rows) {
-            if (tutor.allowed_groups && tutor.allowed_groups.length > 0) {
-                const maxCourse = tutor.max_course || 4;
-                let changed = false;
-                const newGroups = tutor.allowed_groups
-                    .map(g => {
-                        if (promotedGroups.has(g)) {
-                            changed = true;
-                            return promoteCourse(g);
-                        }
-                        return g;
-                    })
-                    .filter(g => {
-                        // Убираем группы, превысившие max_course
-                        const courseMatch = g ? g.match(/-(\d)/) : null;
-                        const course = courseMatch ? parseInt(courseMatch[1]) : 1;
-                        return course <= maxCourse;
-                    });
-                if (changed || newGroups.length !== tutor.allowed_groups.length) {
-                    await db.query('UPDATE operator_codes SET allowed_groups = $1 WHERE code = $2', [newGroups, tutor.code]);
-                }
-            }
-        }
-
-        res.redirect('/users?success=' + encodeURIComponent(`✅ Переведено: ${promoted}, Выпущено: ${graduated}, Тьюторы обновлены`));
+        res.redirect('/users?success=' + encodeURIComponent(`✅ Переведено: ${promoted}, Выпущено: ${graduated}`));
     } catch (e) {
         res.redirect('/users?error=' + encodeURIComponent(e.message));
     }

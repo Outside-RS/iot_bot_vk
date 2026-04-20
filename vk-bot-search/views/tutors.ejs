@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Тьюторы — Админ-панель</title>
+    <title>Администраторы — Админ-панель</title>
     <link rel="stylesheet" href="/css/admin.css">
 </head>
 
@@ -15,7 +15,7 @@
         <div class="nav-links">
             <a href="/" class="nav-link">🏠 Главная</a>
             <a href="/faq" class="nav-link">📚 База знаний</a>
-            <a href="/tutors" class="nav-link active">👨‍🏫 Тьюторы</a>
+            <a href="/tutors" class="nav-link active">👨‍💼 Администраторы</a>
             <a href="/groups" class="nav-link">📌 Группы VK</a>
             <a href="/users" class="nav-link">👥 Пользователи</a>
             <a href="/broadcast" class="nav-link">📢 Рассылка</a>
@@ -26,7 +26,7 @@
     </nav>
 
     <div class="container">
-        <h1 class="page-title">👨‍🏫 Управление Тьюторами</h1>
+        <h1 class="page-title">👨‍💼 Управление Администраторами</h1>
 
         <!-- Форма добавления -->
         <div class="card">
@@ -34,27 +34,19 @@
             <form id="addTutorForm" autocomplete="off">
                 <div class="form-row">
                     <div class="form-group">
-                        <label>ФИО Тьютора</label>
+                        <label>ФИО Администратора</label>
                         <input type="text" name="name" placeholder="Иванов И.И." required>
                     </div>
                     <div class="form-group">
-                        <label>Привязка к группам (через запятую)</label>
-                        <input type="text" name="groups" placeholder="РИ-101, РИ-102" required>
-                    </div>
-                    <div class="form-group" style="flex: 0.5;">
-                        <label>Макс. курс</label>
-                        <input type="number" name="max_course" value="4" min="1" max="6" required>
-                    </div>
-                    <div class="form-group">
                         <label>Придумайте Код</label>
-                        <input type="text" name="code" placeholder="SECRET-123" required>
+                        <input type="text" name="code" placeholder="ADMIN-IVAN" required>
                     </div>
                 </div>
                 <button type="submit" class="btn btn-primary" style="background: var(--purple);">Создать доступ</button>
             </form>
         </div>
 
-        <!-- Таблица тьюторов -->
+        <!-- Таблица администраторов -->
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
             <h2 style="color: var(--text-secondary);">Активные коды: <%= tutors.length %>
             </h2>
@@ -65,16 +57,14 @@
                 <thead>
                     <tr>
                         <th>Код доступа</th>
-                        <th>ФИО Владельца</th>
-                        <th>Группы</th>
-                        <th>Макс. курс</th>
+                        <th>ФИО Администратора</th>
                         <th>Действия</th>
                     </tr>
                 </thead>
                 <tbody>
                     <% if (tutors.length===0) { %>
                         <tr>
-                            <td colspan="5" class="empty-state">
+                            <td colspan="3" class="empty-state">
                                 <div class="icon">👤</div>
                                 Нет созданных кодов доступа
                             </td>
@@ -86,11 +76,8 @@
                                             <%= t.code %>
                                         </span></td>
                                     <td>
-                                        <%= t.tutor_name %>
+                                        <%= t.admin_name %>
                                     </td>
-                                    <td>
-                                        <%= t.allowed_groups ? t.allowed_groups.join(', ') : '' %></td>
-                                    <td><span class="badge badge-info"><%= t.max_course || 4 %></span></td>
                                 <td class="actions">
                                     <a href="/tutors/edit/<%= t.code %>" class="action-btn edit" title="Редактировать">✏️</a>
                                     <form action="/tutors/delete/<%= t.code %>" method="POST" 

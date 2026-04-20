@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Редактирование Тьютора — Админ-панель</title>
+    <title>Редактирование Администратора — Админ-панель</title>
     <link rel="stylesheet" href="/css/admin.css">
 </head>
 
@@ -15,7 +15,7 @@
         <div class="nav-links">
             <a href="/" class="nav-link">🏠 Главная</a>
             <a href="/faq" class="nav-link">📚 База знаний</a>
-            <a href="/tutors" class="nav-link active">👨‍🏫 Тьюторы</a>
+            <a href="/tutors" class="nav-link active">👨‍💼 Администраторы</a>
             <a href="/groups" class="nav-link">📌 Группы VK</a>
             <a href="/users" class="nav-link">👥 Пользователи</a>
             <a href="/broadcast" class="nav-link">📢 Рассылка</a>
@@ -36,19 +36,8 @@
                 </div>
 
                 <div class="form-group">
-                    <label>ФИО Тьютора</label>
-                    <input type="text" name="name" value="<%= tutor.tutor_name %>" required>
-                </div>
-
-                <div class="form-group">
-                    <label>Группы (через запятую)</label>
-                    <input type="text" name="groups" value="<%= tutor.allowed_groups.join(', ') %>" required>
-                </div>
-
-                <div class="form-group">
-                    <label>Макс. курс (группы выпускников удаляются)</label>
-                    <input type="number" name="max_course" value="<%= tutor.max_course || 4 %>" min="1" max="6"
-                        required>
+                    <label>ФИО Администратора</label>
+                    <input type="text" name="name" value="<%= tutor.admin_name %>" required>
                 </div>
 
                 <div style="display: flex; gap: 15px; margin-top: 20px;">

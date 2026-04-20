@@ -58,7 +58,7 @@
         <div class="nav-links">
             <a href="/" class="nav-link">🏠 Главная</a>
             <a href="/faq" class="nav-link">📚 База знаний</a>
-            <a href="/tutors" class="nav-link">👨‍🏫 Тьюторы</a>
+            <a href="/tutors" class="nav-link">👨‍🏫 Администраторы</a>
             <a href="/groups" class="nav-link">📌 Группы VK</a>
             <a href="/users" class="nav-link active">👥 Пользователи</a>
             <a href="/broadcast" class="nav-link">📢 Рассылка</a>
@@ -97,7 +97,7 @@
                             <select name="role">
                                 <option value="">Все роли</option>
                                 <option value="student" <%=filter_role=='student' ? 'selected' : '' %>>Студенты</option>
-                                <option value="operator" <%=filter_role=='operator' ? 'selected' : '' %>>Тьюторы
+                                <option value="operator" <%=filter_role=='operator' ? 'selected' : '' %>>Администраторы
                                 </option>
                             </select>
                             <select name="graduated">
@@ -167,7 +167,7 @@
                                                     <td>
                                                         <span
                                                             class="badge <%= u.role === 'operator' ? 'badge-purple' : 'badge-success' %>">
-                                                            <%= u.role==='operator' ? 'Тьютор' : 'Студент' %>
+                                                            <%= u.role==='operator' ? 'Администратор' : 'Студент' %>
                                                         </span>
                                                     </td>
                                                     <td>
