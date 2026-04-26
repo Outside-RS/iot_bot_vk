@@ -74,6 +74,10 @@ async function start() {
         // Запускаем ботов для всех групп
         await startBots();
 
+        // Запускаем AI Worker
+        const { startWorker } = require('./ai_worker');
+        startWorker();
+
         // Запускаем веб-сервер
         app.listen(PORT, () => {
             console.log(`🌍 Админка доступна: http://localhost:${PORT}`);

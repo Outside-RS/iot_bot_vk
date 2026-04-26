@@ -1,7 +1,7 @@
 require('dotenv').config();
-const { Client } = require('pg');
+const { Pool } = require('pg');
 
-const db = new Client({
+const db = new Pool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
@@ -9,8 +9,8 @@ const db = new Client({
     port: process.env.DB_PORT || 5432,
 });
 
-// Подключаемся сразу при импорте файла
-db.connect()
+// Проверяем подключение при импорте
+db.query('SELECT 1')
     .then(() => console.log('📦 База данных подключена (database.js)'))
     .catch(e => console.error('Ошибка БД', e));
 

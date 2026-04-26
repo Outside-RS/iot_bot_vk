@@ -27,6 +27,7 @@ async function runMigration() {
             DROP TABLE IF EXISTS users CASCADE;
             DROP TABLE IF EXISTS operator_codes CASCADE;
             DROP TABLE IF EXISTS vk_groups CASCADE;
+            DROP TABLE IF EXISTS ai_queue CASCADE;
         `);
 
         console.log('Создание новой структуры...');
@@ -60,6 +61,18 @@ async function runMigration() {
                 ai_context JSONB DEFAULT '[]',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE ai_queue (
+                id SERIAL PRIMARY KEY,
+                vk_id BIGINT NOT NULL REFERENCES users(vk_id) ON DELETE CASCADE,
+                vk_group_id BIGINT NOT NULL,
+                ai_context JSONB NOT NULL,
+                faq_context TEXT,
+                status TEXT DEFAULT 'pending',
+                attempts INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX idx_ai_queue_status ON ai_queue(status);
 
             CREATE TABLE faq (
                 id SERIAL PRIMARY KEY,
