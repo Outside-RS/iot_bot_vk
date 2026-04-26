@@ -1,11 +1,26 @@
 require('dotenv').config();
 
 function buildSystemPrompt(faqContext) {
+    const base = 'Ты — вежливый ассистент университета. СТРОГО отвечай ТОЛЬКО на русском языке. Запрещено использовать любые другие языки (английский, китайский и т.д.). Отвечай кратко — 2-3 предложения максимум.';
+
     if (faqContext && faqContext.trim() !== '') {
-        return `Ты — вежливый ассистент университета. Отвечай кратко на русском языке. Используй предоставленный контекст базы знаний: ${faqContext}. Если не можешь помочь или вопрос выходит за рамки контекста — предложи позвать администратора.`;
+        return `${base} Используй предоставленный контекст базы знаний для ответа: ${faqContext}. Если вопрос выходит за рамки контекста — предложи обратиться к администратору.`;
     } else {
-        return `Ты — вежливый ассистент университета. Отвечай кратко на русском языке. У тебя нет контекста из базы знаний. Если не можешь помочь — предложи позвать администратора.`;
+        return `${base} У тебя нет информации из базы знаний. Если не знаешь ответ — честно скажи, что не владеешь этой информацией, и предложи обратиться к администратору.`;
     }
+}
+
+// Пост-фильтр: убирает вставки на иностранных языках (китайский, вьетнамский и т.д.)
+function cleanResponse(text) {
+    // Убираем символы CJK (китайский/японский/корейский), вьетнамские диакритики и прочие нелатинские/некириллические блоки
+    let cleaned = text.replace(/[\u2E80-\u9FFF\uF900-\uFAFF\u3000-\u303F\u1E00-\u1EFF\u0100-\u024F]+/g, '').trim();
+    // Убираем двойные пробелы после удаления
+    cleaned = cleaned.replace(/\s{2,}/g, ' ').replace(/\s([.,!?])/g, '$1');
+
+    if (cleaned.length < 10) {
+        return 'К сожалению, я не могу ответить на этот вопрос. Пожалуйста, обратитесь к администратору.';
+    }
+    return cleaned;
 }
 
 function prepareMessages(messages, faqContext) {
@@ -23,7 +38,7 @@ async function askOllama(messages, faqContext) {
     const preparedMessages = prepareMessages(messages, faqContext);
 
     const url = process.env.OLLAMA_URL || 'http://127.0.0.1:11434/api/chat';
-    const model = process.env.OLLAMA_MODEL || 'llama3';
+    const model = process.env.OLLAMA_MODEL || 'qwen2.5:7b';
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 секунд
@@ -52,7 +67,7 @@ async function askOllama(messages, faqContext) {
         if (!data.message || !data.message.content) {
             throw new Error('Ollama returned empty response');
         }
-        return data.message.content;
+        return cleanResponse(data.message.content);
     } catch (error) {
         clearTimeout(timeoutId);
         console.error('[AI] Ollama недоступна, вызов fallback:', error.message);
