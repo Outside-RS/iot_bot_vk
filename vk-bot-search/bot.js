@@ -224,13 +224,24 @@ async function processState(context, user, vk, groupId) {
                     });
                     return;
                 }
+
+                // FAQ не нашёл уверенного ответа, но если есть хоть какие-то результаты —
+                // передаём их как контекст для ИИ, чтобы он ответил на основе данных вуза
+                const faqHints = res.rows.slice(0, 3)
+                    .map(r => `Вопрос: ${r.question}\nОтвет: ${r.answer}`)
+                    .join('\n---\n');
+
+                if (faqHints) {
+                    console.log(`[SEARCH] Точных совпадений нет, но найдено ${res.rows.length} подсказок для ИИ.`);
+                } else {
+                    console.log('[SEARCH] Ничего не найдено.');
+                }
+                console.log('[SEARCH] Передаем вопрос ИИ.');
+                await enqueueAiTask(context, user, text, faqHints, groupId);
             } catch (err) {
                 console.error('[SEARCH] Error:', err);
+                await enqueueAiTask(context, user, text, '', groupId);
             }
-
-            // Если ничего не нашли
-            console.log('[SEARCH] Ничего не найдено. Передаем вопрос ИИ.');
-            await enqueueAiTask(context, user, text, '', groupId);
             break;
 
         case 'ai_dialogue_mode':
