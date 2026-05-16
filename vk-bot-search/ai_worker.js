@@ -56,26 +56,28 @@ async function processTask(task) {
         }
 
         if (responseText) {
-            // Проверяем наличие бота ПЕРЕД удалением задачи из очереди
             const bot = global.bots && global.bots[task.vk_group_id];
             if (!bot) {
                 throw new Error(`Бот для группы ${task.vk_group_id} не найден`);
             }
 
-            // Обновляем контекст в базе и возвращаем в режим FAQ-поиска
+            // Пока LLM генерировала ответ, пользователь мог нажать «Отменить» —
+            // bot.js удаляет задачу из очереди, поэтому проверяем до отправки
+            const stillExists = await db.query('SELECT id FROM ai_queue WHERE id = $1', [task.id]);
+            if (stillExists.rows.length === 0) {
+                console.log(`[Worker] Task ${task.id} cancelled during generation, skipping`);
+                return;
+            }
+
             task.ai_context.push({ role: 'assistant', content: responseText, model: usedModel });
             await db.query("UPDATE users SET ai_context = $1, state = 'ask_question_mode' WHERE vk_id = $2", [JSON.stringify(task.ai_context), task.vk_id]);
-            
-            // Удаляем задачу из очереди (только после успешной проверки бота)
             await db.query('DELETE FROM ai_queue WHERE id = $1', [task.id]);
 
-            // Сохраняем последний вопрос из контекста для кнопки "Передать админу"
-            const lastUserMsg = [...task.ai_context].reverse().find(m => m.role === 'user');
-            const questionForAdmin = lastUserMsg ? lastUserMsg.content : 'Вопрос из AI диалога';
             
+
             const kb = Keyboard.builder()
                 .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).row()
-                .textButton({ label: '👨‍💼 Передать админу', payload: { command: 'operator_request', question: questionForAdmin }, color: Keyboard.PRIMARY_COLOR });
+                .textButton({ label: '👨‍💼 Передать админу', payload: { command: 'operator_request' }, color: Keyboard.PRIMARY_COLOR });
                 
             await bot.api.messages.send({
                 user_id: task.vk_id,
@@ -97,12 +99,9 @@ async function processTask(task) {
             
             const bot = global.bots && global.bots[task.vk_group_id];
             if (bot) {
-                const lastUserMsg = [...task.ai_context].reverse().find(m => m.role === 'user');
-                const questionForAdmin = lastUserMsg ? lastUserMsg.content : 'Вопрос из AI диалога';
-
                 const kb = Keyboard.builder()
                     .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).row()
-                    .textButton({ label: '👨‍💼 Передать админу', payload: { command: 'operator_request', question: questionForAdmin }, color: Keyboard.PRIMARY_COLOR });
+                    .textButton({ label: '👨‍💼 Передать админу', payload: { command: 'operator_request' }, color: Keyboard.PRIMARY_COLOR });
                 await bot.api.messages.send({
                     user_id: task.vk_id,
                     random_id: Math.floor(Math.random() * 1000000),

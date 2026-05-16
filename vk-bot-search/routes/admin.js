@@ -1,7 +1,16 @@
 const express = require('express');
 const router = express.Router();
+const rateLimit = require('express-rate-limit');
 const { db } = require('../database');
 const createBotInstance = require('../bot');
+
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: 'Слишком много попыток входа. Повторите через 15 минут.',
+    standardHeaders: true,
+    legacyHeaders: false,
+});
 
 // Проверка авторизации
 function requireAuth(req, res, next) {
@@ -25,7 +34,7 @@ router.get('/login', (req, res) => {
     res.render('login', { error: null });
 });
 
-router.post('/login', (req, res) => {
+router.post('/login', loginLimiter, (req, res) => {
     const { password } = req.body;
     if (password === process.env.ADMIN_PASS) {
         req.session.isAdmin = true;
@@ -45,22 +54,152 @@ router.get('/', requireAuth, noCache, async (req, res) => {
         const ticketCount = await db.query('SELECT count(*) FROM tickets');
         const botsCount = Object.keys(global.bots || {}).length;
 
-        // Проверка Ollama
-        let ollamaStatus = 'Не активна';
+        // Получаем настройки ИИ из БД
+        let aiSettings = { ollama_url: 'http://127.0.0.1:11434', ollama_model: 'qwen2.5:7b', gigachat_model: 'GigaChat-2' };
         try {
-            const ollamaRes = await fetch('http://127.0.0.1:11434/api/tags', {
+            const settingsRes = await db.query('SELECT * FROM app_settings WHERE id = TRUE');
+            if (settingsRes.rows.length > 0) aiSettings = settingsRes.rows[0];
+        } catch (e) { /* таблица может не существовать */ }
+
+        // Проверка Ollama
+        let ollamaStatus = 'offline';
+        try {
+            const ollamaRes = await fetch((aiSettings.ollama_url || 'http://127.0.0.1:11434') + '/api/tags', {
                 signal: AbortSignal.timeout(2000)
             });
-            if (ollamaRes.ok) ollamaStatus = 'Активна';
+            if (ollamaRes.ok) ollamaStatus = 'online';
         } catch (e) { /* Ollama не отвечает */ }
+
+        // Проверка GigaChat
+        let gigachatStatus = 'offline';
+        if (aiSettings.gigachat_key) {
+            try {
+                const { gigaChatFetch } = require('../ai_service');
+                const crypto = require('crypto');
+                const tokenRes = await gigaChatFetch('https://ngw.devices.sberbank.ru:9443/api/v2/oauth', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'application/json',
+                        'Authorization': `Basic ${aiSettings.gigachat_key}`,
+                        'RqUID': crypto.randomUUID()
+                    },
+                    body: `scope=${aiSettings.gigachat_scope || 'GIGACHAT_API_PERS'}`
+                });
+                if (tokenRes.ok) gigachatStatus = 'online';
+            } catch (e) { /* GigaChat недоступен */ }
+        }
 
         res.render('dashboard', {
             count: ticketCount.rows[0].count,
             botsCount,
-            ollamaStatus
+            ollamaStatus,
+            ollamaModel: aiSettings.ollama_model || 'qwen2.5:7b',
+            gigachatStatus,
+            gigachatModel: aiSettings.gigachat_model || 'GigaChat-2'
         });
     } catch (e) {
-        res.send('Ошибка БД: ' + e.message);
+        console.error('[Admin] Dashboard error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
+    }
+});
+
+// === API: Статус ИИ (AJAX) ===
+router.get('/api/ai-status', requireAuth, async (req, res) => {
+    try {
+        // Настройки из БД
+        let settings = { ollama_url: 'http://127.0.0.1:11434', ollama_model: 'qwen2.5:7b', gigachat_key: null, gigachat_scope: 'GIGACHAT_API_PERS', gigachat_model: 'GigaChat-2' };
+        try {
+            const r = await db.query('SELECT * FROM app_settings WHERE id = TRUE');
+            if (r.rows.length > 0) settings = r.rows[0];
+        } catch (e) { }
+
+        // Статус Ollama + список моделей
+        let ollamaStatus = 'offline';
+        let ollamaModels = [];
+        try {
+            const ollamaRes = await fetch((settings.ollama_url || 'http://127.0.0.1:11434') + '/api/tags', {
+                signal: AbortSignal.timeout(3000)
+            });
+            if (ollamaRes.ok) {
+                ollamaStatus = 'online';
+                const data = await ollamaRes.json();
+                ollamaModels = (data.models || []).map(m => m.name);
+            }
+        } catch (e) { }
+
+        // Статус GigaChat
+        let gigachatStatus = settings.gigachat_key ? 'configured' : 'no_key';
+
+        // Маскируем ключ для безопасности: показываем только последние 6 символов
+        let maskedKey = '';
+        if (settings.gigachat_key) {
+            const key = settings.gigachat_key;
+            maskedKey = key.length > 6 ? '***' + key.slice(-6) : '***';
+        }
+
+        res.json({
+            ollama: {
+                status: ollamaStatus,
+                url: settings.ollama_url || 'http://127.0.0.1:11434',
+                model: settings.ollama_model || 'qwen2.5:7b',
+                models: ollamaModels
+            },
+            gigachat: {
+                status: gigachatStatus,
+                model: settings.gigachat_model || 'GigaChat-2',
+                scope: settings.gigachat_scope || 'GIGACHAT_API_PERS',
+                maskedKey
+            }
+        });
+    } catch (e) {
+        console.error('[Admin] AI status error:', e.message);
+        res.status(500).json({ error: 'Внутренняя ошибка сервера.' });
+    }
+});
+
+// === API: Сохранение настроек ИИ ===
+router.post('/ai-settings', requireAuth, async (req, res) => {
+    try {
+        const { ollama_url, ollama_model, gigachat_key, gigachat_scope, gigachat_model } = req.body;
+
+        // Получаем текущий ключ чтобы понять, изменился ли он
+        const current = await db.query('SELECT gigachat_key FROM app_settings WHERE id = TRUE');
+        const oldKey = current.rows.length > 0 ? current.rows[0].gigachat_key : null;
+
+        // Обновляем настройки в БД
+        await db.query(`
+            INSERT INTO app_settings (id, ollama_url, ollama_model, gigachat_key, gigachat_scope, gigachat_model)
+            VALUES (TRUE, $1, $2, $3, $4, $5)
+            ON CONFLICT (id) DO UPDATE SET
+                ollama_url = $1,
+                ollama_model = $2,
+                gigachat_key = COALESCE(NULLIF($3, ''), app_settings.gigachat_key),
+                gigachat_scope = $4,
+                gigachat_model = $5
+        `, [
+            ollama_url || 'http://127.0.0.1:11434',
+            ollama_model || 'qwen2.5:7b',
+            gigachat_key || '',
+            gigachat_scope || 'GIGACHAT_API_PERS',
+            gigachat_model || 'GigaChat-2'
+        ]);
+
+        // Сбрасываем кэши в AI Service
+        const { invalidateSettingsCache, resetGigaChatToken } = require('../ai_service');
+        invalidateSettingsCache();
+
+        // Если ключ GigaChat изменился — сбросить токен
+        if (gigachat_key && gigachat_key !== '' && gigachat_key !== oldKey) {
+            resetGigaChatToken();
+            console.log('[Admin] GigaChat ключ изменён, токен сброшен');
+        }
+
+        console.log(`[Admin] Настройки ИИ обновлены: Ollama=${ollama_model}, GigaChat=${gigachat_model}`);
+        res.json({ success: true, message: 'Настройки сохранены' });
+    } catch (e) {
+        console.error('[Admin] Ошибка сохранения настроек:', e.message);
+        res.status(500).json({ error: 'Не удалось сохранить настройки.' });
     }
 });
 
@@ -69,15 +208,17 @@ router.get('/', requireAuth, noCache, async (req, res) => {
 // 1. Просмотр списка
 router.get('/faq', requireAuth, noCache, async (req, res) => {
     try {
-        // Получаем все вопросы, сортируем по ID (новые внизу)
-        const result = await db.query('SELECT * FROM faq ORDER BY id DESC');
+        const result = await db.query('SELECT * FROM faq ORDER BY category ASC, id DESC');
+        const cats = await db.query("SELECT DISTINCT category FROM faq WHERE category IS NOT NULL AND category <> '' ORDER BY category");
         res.render('faq', {
             faq: result.rows,
+            categories: cats.rows.map(r => r.category),
             error: req.query.error || null,
             success: req.query.success || null
         });
     } catch (e) {
-        res.send('Ошибка: ' + e.message);
+        console.error('[Admin] Error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -96,7 +237,8 @@ router.post('/faq/add', requireAuth, noCache, async (req, res) => {
         res.redirect('/faq?success=' + encodeURIComponent('✅ Вопрос успешно добавлен!'));
 
     } catch (e) {
-        res.redirect('/faq?error=' + encodeURIComponent('Ошибка сохранения: ' + e.message));
+        console.error('[Admin] FAQ add error:', e.message);
+        res.redirect('/faq?error=' + encodeURIComponent('Ошибка при сохранении вопроса.'));
     }
 });
 
@@ -106,7 +248,8 @@ router.post('/faq/delete/:id', requireAuth, noCache, async (req, res) => {
         await db.query('DELETE FROM faq WHERE id = $1', [req.params.id]);
         res.redirect('/faq');
     } catch (e) {
-        res.send('Ошибка удаления: ' + e.message);
+        console.error('[Admin] Delete error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -119,9 +262,11 @@ router.get('/faq/edit/:id', requireAuth, noCache, async (req, res) => {
         if (result.rows.length === 0) {
             return res.send('Вопрос не найден');
         }
-        res.render('edit_faq', { item: result.rows[0] });
+        const cats = await db.query("SELECT DISTINCT category FROM faq WHERE category IS NOT NULL AND category <> '' ORDER BY category");
+        res.render('edit_faq', { item: result.rows[0], categories: cats.rows.map(r => r.category) });
     } catch (e) {
-        res.send('Ошибка: ' + e.message);
+        console.error('[Admin] Error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -140,7 +285,8 @@ router.post('/faq/edit/:id', requireAuth, noCache, async (req, res) => {
 
         res.redirect('/faq'); // Возвращаемся к списку
     } catch (e) {
-        res.send('Ошибка обновления: ' + e.message);
+        console.error('[Admin] Update error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -153,7 +299,8 @@ router.get('/tutors/edit/:code', requireAuth, noCache, async (req, res) => {
         if (result.rows.length === 0) return res.send('Код не найден');
         res.render('edit_tutor', { tutor: result.rows[0] });
     } catch (e) {
-        res.send('Ошибка: ' + e.message);
+        console.error('[Admin] Error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -167,7 +314,8 @@ router.post('/tutors/edit/:code', requireAuth, async (req, res) => {
         );
         res.redirect('/tutors');
     } catch (e) {
-        res.send('Ошибка обновления: ' + e.message);
+        console.error('[Admin] Update error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -176,7 +324,8 @@ router.get('/tutors', requireAuth, noCache, async (req, res) => {
         const result = await db.query('SELECT * FROM operator_codes ORDER BY code ASC');
         res.render('tutors', { tutors: result.rows });
     } catch (e) {
-        res.send('Ошибка: ' + e.message);
+        console.error('[Admin] Error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -189,7 +338,8 @@ router.post('/tutors/add', requireAuth, noCache, async (req, res) => {
         );
         res.redirect('/tutors');
     } catch (e) {
-        res.send('Ошибка (возможно, такой код уже есть): ' + e.message);
+        console.error('[Admin] Tutor add error:', e.message);
+        res.status(500).send('Ошибка: возможно, такой код уже существует.');
     }
 });
 
@@ -198,7 +348,8 @@ router.post('/tutors/delete/:code', requireAuth, noCache, async (req, res) => {
         await db.query('DELETE FROM operator_codes WHERE code = $1', [req.params.code]);
         res.redirect('/tutors');
     } catch (e) {
-        res.send('Ошибка удаления: ' + e.message);
+        console.error('[Admin] Delete error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -261,11 +412,7 @@ router.post('/broadcast/send', requireAuth, async (req, res) => {
         }
     })();
 
-    res.send(`
-        <h1>🚀 Рассылка запущена!</h1>
-        <p>Цель: ${target === 'group' ? group_number : target}</p>
-        <a href="/">Вернуться</a>
-    `);
+    res.redirect('/');
 });
 
 // === ГРУППЫ VK ===
@@ -276,7 +423,8 @@ router.get('/groups', requireAuth, noCache, async (req, res) => {
         const result = await db.query('SELECT * FROM vk_groups ORDER BY created_at DESC');
         res.render('groups', { groups: result.rows, error: null, success: null });
     } catch (e) {
-        res.send('Ошибка: ' + e.message);
+        console.error('[Admin] Error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -329,7 +477,8 @@ router.post('/groups/add', requireAuth, noCache, async (req, res) => {
             success: `✅ Группа "${group_name}" добавлена и запущена!`
         });
     } catch (e) {
-        res.send('Ошибка: ' + e.message);
+        console.error('[Admin] Error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -350,7 +499,8 @@ router.post('/groups/delete/:id', requireAuth, noCache, async (req, res) => {
         await db.query('DELETE FROM vk_groups WHERE id = $1', [req.params.id]);
         res.redirect('/groups');
     } catch (e) {
-        res.send('Ошибка удаления: ' + e.message);
+        console.error('[Admin] Delete error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -383,7 +533,8 @@ router.post('/groups/toggle/:id', requireAuth, noCache, async (req, res) => {
         await db.query('UPDATE vk_groups SET is_active = NOT is_active WHERE id = $1', [req.params.id]);
         res.redirect('/groups');
     } catch (e) {
-        res.send('Ошибка: ' + e.message);
+        console.error('[Admin] Error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -450,7 +601,8 @@ router.get('/users', requireAuth, noCache, async (req, res) => {
             error: req.query.error
         });
     } catch (e) {
-        res.send('Ошибка: ' + e.message);
+        console.error('[Admin] Error:', e.message);
+        res.status(500).send('Внутренняя ошибка сервера.');
     }
 });
 
@@ -478,7 +630,8 @@ router.post('/users/promote/:vk_id', requireAuth, noCache, async (req, res) => {
 
         res.redirect('/users?success=' + encodeURIComponent('Курс обновлён'));
     } catch (e) {
-        res.redirect('/users?error=' + encodeURIComponent(e.message));
+        console.error('[Admin] Users error:', e.message);
+        res.redirect('/users?error=' + encodeURIComponent('Внутренняя ошибка сервера.'));
     }
 });
 
@@ -488,7 +641,8 @@ router.post('/users/graduate/:vk_id', requireAuth, noCache, async (req, res) => 
         await db.query('UPDATE users SET is_graduated = TRUE WHERE vk_id = $1', [req.params.vk_id]);
         res.redirect('/users?success=' + encodeURIComponent('Пользователь помечен как выпускник'));
     } catch (e) {
-        res.redirect('/users?error=' + encodeURIComponent(e.message));
+        console.error('[Admin] Users error:', e.message);
+        res.redirect('/users?error=' + encodeURIComponent('Внутренняя ошибка сервера.'));
     }
 });
 
@@ -498,7 +652,8 @@ router.post('/users/delete/:vk_id', requireAuth, noCache, async (req, res) => {
         await db.query('DELETE FROM users WHERE vk_id = $1', [req.params.vk_id]);
         res.redirect('/users?success=' + encodeURIComponent('Пользователь удалён'));
     } catch (e) {
-        res.redirect('/users?error=' + encodeURIComponent(e.message));
+        console.error('[Admin] Users error:', e.message);
+        res.redirect('/users?error=' + encodeURIComponent('Внутренняя ошибка сервера.'));
     }
 });
 
@@ -552,7 +707,8 @@ router.post('/users/promote-all', requireAuth, noCache, async (req, res) => {
 
         res.redirect('/users?success=' + encodeURIComponent(`✅ Переведено: ${promoted}, Выпущено: ${graduated}`));
     } catch (e) {
-        res.redirect('/users?error=' + encodeURIComponent(e.message));
+        console.error('[Admin] Users error:', e.message);
+        res.redirect('/users?error=' + encodeURIComponent('Внутренняя ошибка сервера.'));
     }
 });
 

@@ -42,12 +42,27 @@
                     <%= botsCount %>
                 </div>
             </div>
-            <div class="stat-card">
-                <h3>Статус Ollama</h3>
-                <div class="stat-number <%= ollamaStatus === 'Активна' ? 'success' : 'danger' %>"
-                    style="font-size: 1.5rem;">
-                    <%= ollamaStatus %>
+
+            <!-- Карточка ИИ-ассистента (кликабельная) -->
+            <div class="stat-card ai-card" id="aiCard" onclick="openAiModal()">
+                <h3>🤖 ИИ-ассистент</h3>
+                <div class="ai-status-list">
+                    <div class="ai-status-row">
+                        <span class="ai-dot <%= ollamaStatus === 'online' ? 'dot-online' : 'dot-offline' %>"></span>
+                        <span class="ai-label">Ollama</span>
+                        <span class="ai-model">
+                            <%= ollamaModel %>
+                        </span>
+                    </div>
+                    <div class="ai-status-row">
+                        <span class="ai-dot <%= gigachatStatus === 'online' ? 'dot-online' : 'dot-offline' %>"></span>
+                        <span class="ai-label">GigaChat</span>
+                        <span class="ai-model">
+                            <%= gigachatModel %>
+                        </span>
+                    </div>
                 </div>
+                <div class="ai-card-hint">Нажмите для настройки ⚙️</div>
             </div>
         </div>
 
@@ -81,6 +96,215 @@
             </a>
         </div>
     </div>
+
+    <!-- Модальное окно настроек ИИ -->
+    <div class="modal-overlay" id="aiModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>⚙️ Настройки ИИ-ассистента</h2>
+                <button class="modal-close" onclick="closeAiModal()">✕</button>
+            </div>
+
+            <div id="aiModalLoading" class="modal-loading">
+                <div class="spinner"></div>
+                <p>Проверка статуса моделей...</p>
+            </div>
+
+            <div id="aiModalBody" style="display: none;">
+                <!-- Секция Ollama -->
+                <div class="ai-section">
+                    <div class="ai-section-header">
+                        <span class="ai-dot" id="ollamaDot"></span>
+                        <h3>Ollama (Локальная модель)</h3>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>URL сервера</label>
+                            <input type="text" id="ollamaUrl" placeholder="http://127.0.0.1:11434">
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Модель</label>
+                            <select id="ollamaModel">
+                                <option value="">Загрузка...</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Секция GigaChat -->
+                <div class="ai-section">
+                    <div class="ai-section-header">
+                        <span class="ai-dot" id="gigachatDot"></span>
+                        <h3>GigaChat (Облачная модель)</h3>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Authorization Key</label>
+                            <input type="password" id="gigachatKey" placeholder="Текущий: не задан">
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Scope</label>
+                            <select id="gigachatScope">
+                                <option value="GIGACHAT_API_PERS">GIGACHAT_API_PERS (Физ. лица)</option>
+                                <!--<option value="GIGACHAT_API_B2B">GIGACHAT_API_B2B (ИП/Юр. лица)</option>-->
+                                <!--<option value="GIGACHAT_API_CORP">GIGACHAT_API_CORP (Pay-as-you-go)</option>-->
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Модель</label>
+                            <select id="gigachatModel">
+                                <option value="GigaChat-2">GigaChat-2 (Быстрая)</option>
+                                <option value="GigaChat-2-Pro">GigaChat-2-Pro (Продвинутая)</option>
+                                <option value="GigaChat-2-Max">GigaChat-2-Max (Максимальная)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="info-box" id="gigachatKeyInfo" style="display: none;">
+                        Текущий ключ: <code id="gigachatMaskedKey"></code>
+                        <br><small>Оставьте поле пустым, чтобы сохранить текущий ключ</small>
+                    </div>
+                </div>
+
+                <!-- Кнопки -->
+                <div class="modal-actions">
+                    <button class="btn btn-primary" id="saveAiBtn" onclick="saveAiSettings()">
+                        💾 Сохранить
+                    </button>
+                    <button class="btn btn-danger" style="margin-left: 10px;" onclick="closeAiModal()">
+                        Отмена
+                    </button>
+                </div>
+
+                <div id="aiSaveResult" class="ai-save-result" style="display: none;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function openAiModal() {
+            document.getElementById('aiModal').classList.add('active');
+            document.getElementById('aiModalLoading').style.display = 'flex';
+            document.getElementById('aiModalBody').style.display = 'none';
+            loadAiStatus();
+        }
+
+        function closeAiModal() {
+            document.getElementById('aiModal').classList.remove('active');
+        }
+
+        // Закрытие по клику на overlay
+        document.getElementById('aiModal').addEventListener('click', function (e) {
+            if (e.target === this) closeAiModal();
+        });
+
+        async function loadAiStatus() {
+            try {
+                const res = await fetch('/api/ai-status');
+                const data = await res.json();
+
+                // Ollama
+                const ollamaDot = document.getElementById('ollamaDot');
+                ollamaDot.className = 'ai-dot ' + (data.ollama.status === 'online' ? 'dot-online' : 'dot-offline');
+                document.getElementById('ollamaUrl').value = data.ollama.url;
+
+                // Заполняем select моделей Ollama
+                const modelSelect = document.getElementById('ollamaModel');
+                modelSelect.innerHTML = '';
+
+                if (data.ollama.models.length > 0) {
+                    data.ollama.models.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m;
+                        opt.textContent = m;
+                        if (m === data.ollama.model) opt.selected = true;
+                        modelSelect.appendChild(opt);
+                    });
+                } else {
+                    // Если Ollama недоступна — показать текущую модель из БД
+                    const opt = document.createElement('option');
+                    opt.value = data.ollama.model;
+                    opt.textContent = data.ollama.model + ' (сервер не отвечает)';
+                    modelSelect.appendChild(opt);
+                }
+
+                // GigaChat
+                const gigaDot = document.getElementById('gigachatDot');
+                gigaDot.className = 'ai-dot ' + (data.gigachat.status === 'configured' ? 'dot-configured' : 'dot-offline');
+
+                document.getElementById('gigachatScope').value = data.gigachat.scope;
+                document.getElementById('gigachatModel').value = data.gigachat.model;
+
+                if (data.gigachat.maskedKey) {
+                    document.getElementById('gigachatKeyInfo').style.display = 'block';
+                    document.getElementById('gigachatMaskedKey').textContent = data.gigachat.maskedKey;
+                    document.getElementById('gigachatKey').placeholder = 'Оставьте пустым для сохранения текущего';
+                } else {
+                    document.getElementById('gigachatKeyInfo').style.display = 'none';
+                    document.getElementById('gigachatKey').placeholder = 'Вставьте Authorization Key';
+                }
+
+                document.getElementById('aiModalLoading').style.display = 'none';
+                document.getElementById('aiModalBody').style.display = 'block';
+
+            } catch (e) {
+                const errEl = document.getElementById('aiModalLoading');
+                errEl.innerHTML = '<p style="color: var(--danger);"></p>';
+                errEl.querySelector('p').textContent = 'Ошибка загрузки: ' + e.message;
+            }
+        }
+
+        async function saveAiSettings() {
+            const btn = document.getElementById('saveAiBtn');
+            const result = document.getElementById('aiSaveResult');
+            btn.disabled = true;
+            btn.textContent = '⏳ Сохранение...';
+
+            try {
+                const body = {
+                    ollama_url: document.getElementById('ollamaUrl').value,
+                    ollama_model: document.getElementById('ollamaModel').value,
+                    gigachat_key: document.getElementById('gigachatKey').value,
+                    gigachat_scope: document.getElementById('gigachatScope').value,
+                    gigachat_model: document.getElementById('gigachatModel').value
+                };
+
+                const res = await fetch('/ai-settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+
+                const data = await res.json();
+
+                if (data.success) {
+                    result.className = 'ai-save-result success';
+                    result.textContent = '✅ ' + data.message;
+                    result.style.display = 'block';
+
+                    // Обновляем индикаторы на дашборде через 1.5 сек
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    throw new Error(data.error || 'Неизвестная ошибка');
+                }
+            } catch (e) {
+                result.className = 'ai-save-result error';
+                result.textContent = '❌ ' + e.message;
+                result.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '💾 Сохранить';
+            }
+        }
+    </script>
 </body>
 
 </html>

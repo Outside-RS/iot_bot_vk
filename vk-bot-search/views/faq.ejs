@@ -43,10 +43,15 @@
                         <div class="card">
                             <div class="card-header">➕ Добавить новый вопрос</div>
                             <form action="/faq/add" method="POST">
+                                <datalist id="faq-categories">
+                                    <% categories.forEach(function(cat) { %>
+                                        <option value="<%= cat %>">
+                                    <% }); %>
+                                </datalist>
                                 <div class="form-row">
                                     <div class="form-group" style="flex: 1;">
                                         <label>Категория</label>
-                                        <input type="text" name="category" placeholder="Например: Стипендия" required>
+                                        <input type="text" name="category" list="faq-categories" autocomplete="off" placeholder="Например: Стипендия" required>
                                     </div>
                                     <div class="form-group" style="flex: 2;">
                                         <label>Вопрос студента</label>
@@ -72,10 +77,16 @@
                         </div>
 
                         <!-- Таблица FAQ -->
-                        <div
-                            style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                            <h2 style="color: var(--text-secondary);">Всего вопросов: <%= faq.length %>
-                            </h2>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <h2 style="color: var(--text-secondary);">Всего вопросов: <span id="faqVisibleCount"><%= faq.length %></span></h2>
+                            <% if (categories.length > 0) { %>
+                            <select id="categoryFilter" onchange="filterByCategory(this.value)" style="width: auto;">
+                                <option value="">Все категории</option>
+                                <% categories.forEach(function(cat) { %>
+                                    <option value="<%= cat %>"><%= cat %></option>
+                                <% }); %>
+                            </select>
+                            <% } %>
                         </div>
 
                         <div class="table-container">
@@ -99,7 +110,7 @@
                                         </tr>
                                         <% } else { %>
                                             <% faq.forEach(function(item) { %>
-                                                <tr>
+                                                <tr data-category="<%= item.category %>">
                                                     <td>
                                                         <%= item.id %>
                                                     </td>
@@ -135,6 +146,19 @@
                             </table>
                         </div>
     </div>
+
+    <script>
+        function filterByCategory(value) {
+            const rows = document.querySelectorAll('tbody tr[data-category]');
+            let visible = 0;
+            rows.forEach(function(row) {
+                const match = !value || row.dataset.category === value;
+                row.style.display = match ? '' : 'none';
+                if (match) visible++;
+            });
+            document.getElementById('faqVisibleCount').textContent = visible;
+        }
+    </script>
 </body>
 
 </html>

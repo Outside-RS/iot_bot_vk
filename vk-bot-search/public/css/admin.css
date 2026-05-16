@@ -669,3 +669,222 @@ tbody tr:last-child td {
     font-size: 14px;
     margin-bottom: 15px;
 }
+
+/* === КАРТОЧКА ИИ-АССИСТЕНТА === */
+.ai-card {
+    cursor: pointer;
+    transition: all 0.3s;
+    border: 1px solid transparent;
+    position: relative;
+}
+
+.ai-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-3px);
+    box-shadow: 0 8px 30px rgba(79, 195, 247, 0.2);
+}
+
+.ai-status-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.ai-status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.9rem;
+}
+
+.ai-label {
+    color: var(--text-secondary);
+    min-width: 70px;
+}
+
+.ai-model {
+    color: var(--accent);
+    font-family: 'Consolas', monospace;
+    font-size: 0.8rem;
+}
+
+.ai-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.dot-online {
+    background: var(--success);
+    box-shadow: 0 0 8px rgba(39, 174, 96, 0.6);
+}
+
+.dot-offline {
+    background: var(--danger);
+    box-shadow: 0 0 8px rgba(231, 76, 60, 0.4);
+}
+
+.dot-configured {
+    background: var(--warning);
+    box-shadow: 0 0 8px rgba(255, 152, 0, 0.4);
+}
+
+.ai-card-hint {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-top: 12px;
+}
+
+/* === МОДАЛЬНОЕ ОКНО ИИ === */
+.modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+    z-index: 1000;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+}
+
+.modal-overlay.active {
+    display: flex;
+}
+
+.modal-content {
+    background: var(--bg-secondary);
+    border-radius: var(--radius-lg);
+    max-width: 600px;
+    width: 100%;
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    animation: modalIn 0.3s ease;
+}
+
+@keyframes modalIn {
+    from {
+        opacity: 0;
+        transform: scale(0.95) translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 25px;
+    border-bottom: 1px solid var(--bg-tertiary);
+}
+
+.modal-header h2 {
+    color: var(--text-primary);
+    font-size: 1.2rem;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.5rem;
+    cursor: pointer;
+    padding: 5px 10px;
+    border-radius: var(--radius);
+    transition: all 0.2s;
+}
+
+.modal-close:hover {
+    color: var(--danger);
+    background: rgba(231, 76, 60, 0.1);
+}
+
+.modal-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    gap: 15px;
+    color: var(--text-secondary);
+}
+
+.spinner {
+    width: 36px;
+    height: 36px;
+    border: 3px solid var(--bg-tertiary);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* === СЕКЦИИ НАСТРОЕК ИИ === */
+.ai-section {
+    padding: 20px 25px;
+    border-bottom: 1px solid var(--bg-tertiary);
+}
+
+.ai-section:last-of-type {
+    border-bottom: none;
+}
+
+.ai-section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.ai-section-header h3 {
+    color: var(--text-primary);
+    font-size: 1rem;
+}
+
+.modal-actions {
+    padding: 20px 25px;
+    display: flex;
+    align-items: center;
+    border-top: 1px solid var(--bg-tertiary);
+}
+
+.ai-save-result {
+    padding: 12px 25px;
+    font-size: 0.9rem;
+    text-align: center;
+    animation: slideIn 0.3s ease;
+}
+
+.ai-save-result.success {
+    color: var(--success);
+    background: rgba(39, 174, 96, 0.1);
+}
+
+.ai-save-result.error {
+    color: var(--danger);
+    background: rgba(231, 76, 60, 0.1);
+}
+
+/* === АДАПТИВНОСТЬ МОДАЛКИ === */
+@media (max-width: 480px) {
+    .modal-content {
+        max-height: 95vh;
+    }
+
+    .ai-section {
+        padding: 15px;
+    }
+}

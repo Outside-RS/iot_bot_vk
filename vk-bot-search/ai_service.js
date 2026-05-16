@@ -1,13 +1,85 @@
 require('dotenv').config();
+const https = require('https');
+const { db } = require('./database');
 
-// Сертификат Сбера (GigaChat) не в стандартном CA-хранилище Node.js
-// Без этой строки fetch к gigachat.devices.sberbank.ru упадёт с UNABLE_TO_VERIFY_LEAF_SIGNATURE
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+// Сбер использует сертификат не из стандартного CA-хранилища Node.js.
+// Агент с отключённой проверкой применяется только к запросам GigaChat,
+// чтобы не затрагивать VK API и Ollama.
+const gigaChatAgent = new https.Agent({ rejectUnauthorized: false });
+
+function gigaChatFetch(url, options = {}) {
+    return new Promise((resolve, reject) => {
+        const u = new URL(url);
+        const req = https.request(
+            {
+                hostname: u.hostname,
+                port: u.port || 443,
+                path: u.pathname + u.search,
+                method: options.method || 'GET',
+                headers: options.headers || {},
+                agent: gigaChatAgent,
+            },
+            (res) => {
+                let raw = '';
+                res.on('data', chunk => raw += chunk);
+                res.on('end', () => resolve({
+                    ok: res.statusCode >= 200 && res.statusCode < 300,
+                    status: res.statusCode,
+                    text: () => Promise.resolve(raw),
+                    json: () => Promise.resolve(JSON.parse(raw)),
+                }));
+            }
+        );
+        req.on('error', reject);
+        if (options.body) req.write(options.body);
+        req.end();
+    });
+}
+
+// ==================== Получение настроек из БД ====================
+// Кэш настроек (обновляется каждые 30 секунд чтобы не дёргать БД на каждый запрос)
+let settingsCache = null;
+let settingsCacheTime = 0;
+const SETTINGS_CACHE_TTL = 30000; // 30 секунд
+
+async function getSettings() {
+    if (settingsCache && Date.now() - settingsCacheTime < SETTINGS_CACHE_TTL) {
+        return settingsCache;
+    }
+
+    try {
+        const res = await db.query('SELECT * FROM app_settings WHERE id = TRUE');
+        if (res.rows.length > 0) {
+            settingsCache = res.rows[0];
+            settingsCacheTime = Date.now();
+            return settingsCache;
+        }
+    } catch (err) {
+        console.error('[AI] Ошибка чтения app_settings:', err.message);
+    }
+
+    // Fallback на .env если таблица ещё не создана
+    return {
+        ollama_url: process.env.OLLAMA_URL || 'http://127.0.0.1:11434',
+        ollama_model: process.env.OLLAMA_MODEL || 'qwen2.5:7b',
+        gigachat_key: process.env.GIGACHAT_AUTH_KEY || null,
+        gigachat_scope: process.env.GIGACHAT_SCOPE || 'GIGACHAT_API_PERS',
+        gigachat_model: 'GigaChat-2'
+    };
+}
+
+/** Сбросить кэш настроек (вызывается при сохранении через UI) */
+function invalidateSettingsCache() {
+    settingsCache = null;
+    settingsCacheTime = 0;
+}
+
+// ==================== Системный промпт ====================
 
 function buildSystemPrompt(faqContext) {
     const base = [
         'Ты — вежливый ассистент университета.',
-        'СТРОГО отвечай ТОЛЬКО на русском языке. Запрещено использовать любые другие языки.',
+        'СТРОГО отвечай ТОЛЬКО на русском языке. Абсолютно запрещено использовать английские или любые другие слова в ответе (если это не общепринятые IT-аббревиатуры). Переводи всё на русский.',
         'Отвечай кратко — 2-3 предложения максимум.',
         'Ты отвечаешь ТОЛЬКО на вопросы, связанные с университетом: учёба, расписание, документы, стипендии, общежитие, мероприятия, стажировки, студенческая жизнь.',
         'На любые вопросы НЕ связанные с университетом (программирование, еда, погода, игры, личные просьбы и т.д.) — вежливо откажи и скажи: "Я могу помочь только по вопросам, связанным с университетом."',
@@ -21,12 +93,31 @@ function buildSystemPrompt(faqContext) {
     }
 }
 
-// Пост-фильтр: убирает вставки на иностранных языках (китайский, вьетнамский и т.д.)
+// Пост-фильтр: убирает артефакты иностранных языков из ответа модели
 function cleanResponse(text) {
-    // Убираем символы CJK (китайский/японский/корейский), вьетнамские диакритики и прочие нелатинские/некириллические блоки
-    let cleaned = text.replace(/[\u2E80-\u9FFF\uF900-\uFAFF\u3000-\u303F\u1E00-\u1EFF\u0100-\u024F]+/g, '').trim();
-    // Убираем двойные пробелы после удаления
-    cleaned = cleaned.replace(/\s{2,}/g, ' ').replace(/\s([.,!?])/g, '$1');
+    // 1. CJK, полноширокие символы (в т.ч. ，), расширенная латиница, вьетнамские диакритики
+    let cleaned = text.replace(
+        /[⺀-鿿豈-﫿　-〿＀-￯Ḁ-ỿĀ-ɏ]+/g, ''
+    ).trim();
+
+    // 2. Латиница, вклинившаяся внутрь кириллического слова ("Тюstinой" → "Тюой")
+    cleaned = cleaned.replace(/(?<=[Ѐ-ӿ])[A-Za-z]+(?=[Ѐ-ӿ])/g, '');
+
+    // 3. CamelCase-слово слитно после кириллицы без пробела ("иProcedure" → "и")
+    cleaned = cleaned.replace(/(?<=[Ѐ-ӿ])[A-Z][a-z]+\w*/g, '');
+
+    // 4. Чистим пробелы и знаки препинания после удалений
+    cleaned = cleaned.replace(/\s{2,}/g, ' ').replace(/\s([.,!?:;])/g, '$1').trim();
+
+    // 5. Обрезаем незавершённое предложение в конце (нет . ! ? после основного текста)
+    const lastTerminator = Math.max(
+        cleaned.lastIndexOf('.'),
+        cleaned.lastIndexOf('!'),
+        cleaned.lastIndexOf('?')
+    );
+    if (lastTerminator > 10 && lastTerminator < cleaned.length - 1) {
+        cleaned = cleaned.substring(0, lastTerminator + 1).trim();
+    }
 
     if (cleaned.length < 10) {
         return 'К сожалению, я не могу ответить на этот вопрос. Пожалуйста, обратитесь к администратору.';
@@ -40,16 +131,26 @@ function prepareMessages(messages, faqContext) {
         content: buildSystemPrompt(faqContext)
     };
 
-    // Берем последние 6 сообщений, чтобы не переполнять контекст
-    const recentMessages = messages.slice(-6);
+    // Берем последние 6 сообщений, чтобы не переполнять контекст.
+    // Оборачиваем user-сообщения в явный тег — минимальный mitigation против prompt injection.
+    // Полная защита от injection на уровне кода невозможна для LLM,
+    // но теги снижают вероятность случайного выхода за рамки системного промпта.
+    const recentMessages = messages.slice(-6).map(m =>
+        m.role === 'user'
+            ? { ...m, content: `[ВОПРОС СТУДЕНТА]: ${m.content}\n[КОНЕЦ ВОПРОСА]` }
+            : m
+    );
     return [systemPrompt, ...recentMessages];
 }
 
+// ==================== Ollama ====================
+
 async function askOllama(messages, faqContext) {
+    const settings = await getSettings();
     const preparedMessages = prepareMessages(messages, faqContext);
 
-    const url = process.env.OLLAMA_URL || 'http://127.0.0.1:11434/api/chat';
-    const model = process.env.OLLAMA_MODEL || 'qwen2.5:7b';
+    const url = settings.ollama_url + '/api/chat';
+    const model = settings.ollama_model;
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 секунд
@@ -63,7 +164,8 @@ async function askOllama(messages, faqContext) {
             body: JSON.stringify({
                 model: model,
                 messages: preparedMessages,
-                stream: false
+                stream: false,
+                options: { num_predict: 512 }
             }),
             signal: controller.signal
         });
@@ -89,13 +191,28 @@ async function askOllama(messages, faqContext) {
 // ==================== GigaChat ====================
 let gigaChatToken = null;
 let gigaChatTokenExpiresAt = 0;
+let gigaChatCachedKey = null; // Запоминаем ключ, с которым получен токен
+
+/** Сброс кэша токена GigaChat (вызывается при смене API-ключа через UI) */
+function resetGigaChatToken() {
+    gigaChatToken = null;
+    gigaChatTokenExpiresAt = 0;
+    gigaChatCachedKey = null;
+    console.log('[AI] GigaChat: кэш токена сброшен');
+}
 
 async function getGigaChatToken() {
-    const authKey = process.env.GIGACHAT_AUTH_KEY;
-    const scope = process.env.GIGACHAT_SCOPE || 'GIGACHAT_API_PERS';
+    const settings = await getSettings();
+    const authKey = settings.gigachat_key;
+    const scope = settings.gigachat_scope || 'GIGACHAT_API_PERS';
 
     if (!authKey) {
-        throw new Error('GigaChat API key is missing (GIGACHAT_AUTH_KEY)');
+        throw new Error('GigaChat API key is missing (настройте в панели управления)');
+    }
+
+    // Если ключ изменился — сбрасываем старый токен
+    if (gigaChatCachedKey && gigaChatCachedKey !== authKey) {
+        resetGigaChatToken();
     }
 
     // Если токен ещё живой — возвращаем кэшированный
@@ -108,7 +225,7 @@ async function getGigaChatToken() {
     const crypto = require('crypto');
     const rquid = crypto.randomUUID();
 
-    const response = await fetch('https://ngw.devices.sberbank.ru:9443/api/v2/oauth', {
+    const response = await gigaChatFetch('https://ngw.devices.sberbank.ru:9443/api/v2/oauth', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -126,6 +243,7 @@ async function getGigaChatToken() {
 
     const data = await response.json();
     gigaChatToken = data.access_token;
+    gigaChatCachedKey = authKey;
     // Токен живёт 30 минут, обновляем за минуту до истечения
     gigaChatTokenExpiresAt = data.expires_at || (Date.now() + 29 * 60 * 1000);
 
@@ -134,10 +252,11 @@ async function getGigaChatToken() {
 }
 
 async function askGigaChat(messages, faqContext) {
+    const settings = await getSettings();
     const token = await getGigaChatToken();
     const preparedMessages = prepareMessages(messages, faqContext);
 
-    const response = await fetch('https://gigachat.devices.sberbank.ru/api/v1/chat/completions', {
+    const response = await gigaChatFetch('https://gigachat.devices.sberbank.ru/api/v1/chat/completions', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -145,7 +264,7 @@ async function askGigaChat(messages, faqContext) {
             'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-            model: 'GigaChat-2',
+            model: settings.gigachat_model || 'GigaChat-2',
             messages: preparedMessages,
             temperature: 0.7,
             max_tokens: 300,
@@ -159,8 +278,7 @@ async function askGigaChat(messages, faqContext) {
         const errText = await response.text();
         // Если токен протух — сбрасываем кэш
         if (response.status === 401) {
-            gigaChatToken = null;
-            gigaChatTokenExpiresAt = 0;
+            resetGigaChatToken();
         }
         throw new Error(`GigaChat API error ${response.status}: ${errText}`);
     }
@@ -177,6 +295,10 @@ async function askGigaChat(messages, faqContext) {
 module.exports = {
     askOllama,
     askGigaChat,
+    resetGigaChatToken,
+    invalidateSettingsCache,
+    getSettings,
+    gigaChatFetch,
     // Для тестов
     _test: { cleanResponse, buildSystemPrompt, prepareMessages }
 };

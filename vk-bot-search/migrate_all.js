@@ -28,6 +28,7 @@ async function runMigration() {
             DROP TABLE IF EXISTS operator_codes CASCADE;
             DROP TABLE IF EXISTS vk_groups CASCADE;
             DROP TABLE IF EXISTS ai_queue CASCADE;
+            DROP TABLE IF EXISTS app_settings CASCADE;
         `);
 
         console.log('Создание новой структуры...');
@@ -116,6 +117,17 @@ async function runMigration() {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX idx_messages_ticket ON messages(ticket_id);
+
+            -- Singleton-таблица настроек ИИ (ровно 1 строка, id = TRUE всегда)
+            CREATE TABLE app_settings (
+                id BOOLEAN PRIMARY KEY DEFAULT TRUE,
+                ollama_url TEXT DEFAULT 'http://127.0.0.1:11434',
+                ollama_model TEXT DEFAULT 'qwen2.5:7b',
+                gigachat_key TEXT,
+                gigachat_scope TEXT DEFAULT 'GIGACHAT_API_PERS',
+                gigachat_model TEXT DEFAULT 'GigaChat-2'
+            );
+            INSERT INTO app_settings (id) VALUES (TRUE) ON CONFLICT DO NOTHING;
         `);
 
         // Тестовый администратор

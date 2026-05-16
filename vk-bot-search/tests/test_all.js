@@ -577,3 +577,66 @@ describe('Целостность данных', () => {
         await db.query('DELETE FROM users WHERE vk_id = $1', [testVk]);
     });
 });
+
+// ═══════════════════════════════════════════════════════
+// 6. ТЕСТЫ: app_settings (Singleton-таблица)
+// ═══════════════════════════════════════════════════════
+
+describe('app_settings — Singleton-таблица', () => {
+    it('Таблица содержит ровно одну строку', async () => {
+        const res = await db.query('SELECT COUNT(*) FROM app_settings');
+        assert.equal(parseInt(res.rows[0].count), 1);
+    });
+
+    it('Невозможно вставить вторую строку (PK = TRUE)', async () => {
+        await assert.rejects(async () => {
+            await db.query("INSERT INTO app_settings (id) VALUES (TRUE)");
+        }, { message: /duplicate key|unique constraint|already exists/i });
+    });
+
+    it('UPDATE корректно обновляет модель Ollama', async () => {
+        // Сохраняем текущее значение
+        const before = await db.query('SELECT ollama_model FROM app_settings');
+        const original = before.rows[0].ollama_model;
+
+        await db.query("UPDATE app_settings SET ollama_model = 'llama3' WHERE id = TRUE");
+        const res = await db.query('SELECT ollama_model FROM app_settings WHERE id = TRUE');
+        assert.equal(res.rows[0].ollama_model, 'llama3');
+
+        // Восстанавливаем
+        await db.query("UPDATE app_settings SET ollama_model = $1 WHERE id = TRUE", [original]);
+    });
+
+    it('COALESCE(NULLIF) не стирает gigachat_key при пустой строке', async () => {
+        // Сохраняем текущий
+        const before = await db.query('SELECT gigachat_key FROM app_settings');
+        const originalKey = before.rows[0].gigachat_key;
+
+        // Попытка обновить пустой строкой — ключ должен сохраниться
+        await db.query(`
+            UPDATE app_settings SET
+                gigachat_key = COALESCE(NULLIF($1, ''), app_settings.gigachat_key)
+            WHERE id = TRUE
+        `, ['']);
+
+        const res = await db.query('SELECT gigachat_key FROM app_settings WHERE id = TRUE');
+        assert.equal(res.rows[0].gigachat_key, originalKey, 'Ключ не должен стираться пустой строкой');
+    });
+
+    it('invalidateSettingsCache() и resetGigaChatToken() доступны из ai_service', () => {
+        const { invalidateSettingsCache, resetGigaChatToken } = require('../ai_service');
+        assert.equal(typeof invalidateSettingsCache, 'function');
+        assert.equal(typeof resetGigaChatToken, 'function');
+        // Вызов не должен падать
+        invalidateSettingsCache();
+        resetGigaChatToken();
+    });
+
+    it('getSettings() возвращает данные из БД', async () => {
+        const { getSettings, invalidateSettingsCache } = require('../ai_service');
+        invalidateSettingsCache(); // Сбрасываем кэш чтобы получить свежие
+        const settings = await getSettings();
+        assert.ok(settings.ollama_url);
+        assert.ok(settings.ollama_model);
+    });
+});

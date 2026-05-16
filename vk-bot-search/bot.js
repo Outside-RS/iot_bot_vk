@@ -33,6 +33,10 @@ async function handleMessage(context, vk, groupId) {
 
     if (!text && !messagePayload && attachments.length === 0) return;
 
+    if (text && text.length > 1000) {
+        return context.send('❌ Сообщение слишком длинное. Максимум — 1000 символов.');
+    }
+
     try {
         // 1. ОБРАБОТКА КНОПОК
         if (messagePayload) {
@@ -84,9 +88,16 @@ async function handleMessage(context, vk, groupId) {
                 return;
             }
             if (messagePayload.command === 'confirm_send' || messagePayload.command === 'operator_request') {
-                const qText = messagePayload.question || text || "Вопрос из AI диалога";
-                const userRes = await db.query('SELECT group_number, full_name FROM users WHERE vk_id = $1', [senderId]);
+                const userRes = await db.query('SELECT group_number, full_name, ai_context FROM users WHERE vk_id = $1', [senderId]);
                 const user = userRes.rows[0];
+                
+                let qText = messagePayload.question || text || "Вопрос из AI диалога";
+                
+                // Если вопрос не влез в payload (лимит 255), берем последнее сообщение из контекста
+                if (messagePayload.command === 'operator_request' && !messagePayload.question && user.ai_context) {
+                    const lastUserMsg = [...user.ai_context].reverse().find(m => m.role === 'user');
+                    if (lastUserMsg) qText = lastUserMsg.content;
+                }
                 await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
                 const newT = await db.query("INSERT INTO tickets (student_vk_id, question) VALUES ($1, $2) RETURNING id", [senderId, qText]);
                 await context.send({ message: `✅ Вопрос отправлен администратору.`, keyboard: Keyboard.builder().textButton({ label: '🗂 Мои обращения', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR }).oneTime() });
@@ -154,12 +165,15 @@ async function processState(context, user, vk, groupId) {
 
         case 'ask_question_mode':
             // 0. Навигация
-            if (text === '🏠 В меню' || text === '🔙 Назад' || ['✉️ Задать вопрос', '👤 Профиль', '🗂 Мои обращения'].includes(text)) {
+            if (text === '🏠 В меню' || text === '🔙 Назад' || ['✉️ Задать вопрос', '👤 Профиль', '🗂 Мои обращения'].includes(text) || text === '🏠 В меню (отменить)') {
+                if (text === '🏠 В меню (отменить)') {
+                    await db.query("DELETE FROM ai_queue WHERE vk_id = $1 AND status IN ('pending', 'processing')", [senderId]);
+                }
                 await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
                 return mainMenu(context, user);
             }
 
-            console.log(`[SEARCH] Запрос: "${text}"`);
+            console.log(`[SEARCH] Запрос от ${senderId} (${text.length} символов)`);
 
             // 1. ЕДИНЫЙ ПОИСК (Лексика + Нечеткий)
             // - plainto_tsquery('russian', text) -> превращает "где получить" в "где & получить"
@@ -246,6 +260,9 @@ async function processState(context, user, vk, groupId) {
 
         case 'ai_dialogue_mode':
             if (text === '🏠 В меню' || text === '🔙 Назад' || ['✉️ Задать вопрос', '👤 Профиль', '🗂 Мои обращения'].includes(text) || text === '🏠 В меню (отменить)') {
+                if (text === '🏠 В меню (отменить)') {
+                    await db.query("DELETE FROM ai_queue WHERE vk_id = $1 AND status IN ('pending', 'processing')", [senderId]);
+                }
                 await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
                 return mainMenu(context, user);
             }
@@ -304,8 +321,8 @@ async function processState(context, user, vk, groupId) {
             break;
 
         case 'registration_start': if (text === 'Я Студент') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } else if (text === 'Я Администратор') { await db.query("UPDATE users SET state = 'reg_operator_code' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите код:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
-        case 'reg_student_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'registration_start' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', color: Keyboard.POSITIVE_COLOR }).oneTime() }); } if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1, state = 'reg_student_group' WHERE vk_id = $2", [text, senderId]); await context.send({ message: 'Группа:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); break;
-        case 'reg_student_group': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Введите ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } const g = text.toUpperCase(); if (!REGEX_GROUP.test(g)) return context.send('Ошибка группы'); await db.query("UPDATE users SET group_number = $1, study_years = 4, role = 'student', state = 'main_menu' WHERE vk_id = $2", [g, senderId]); await context.send('✅ Регистрация успешно завершена!'); await mainMenu(context, { ...user, role: 'student' }); break;
+        case 'reg_student_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'registration_start' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', color: Keyboard.POSITIVE_COLOR }).oneTime() }); } if (text.length > 100) return context.send('ФИО слишком длинное.'); if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1, state = 'reg_student_group' WHERE vk_id = $2", [text, senderId]); await context.send({ message: 'Группа:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); break;
+        case 'reg_student_group': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Введите ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } const g = text.toUpperCase(); if (g.length > 20) return context.send('Ошибка группы'); if (!REGEX_GROUP.test(g)) return context.send('Ошибка группы'); await db.query("UPDATE users SET group_number = $1, study_years = 4, role = 'student', state = 'main_menu' WHERE vk_id = $2", [g, senderId]); await context.send('✅ Регистрация успешно завершена!'); await mainMenu(context, { ...user, role: 'student' }); break;
         case 'reg_operator_code': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'registration_start' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', color: Keyboard.POSITIVE_COLOR }).oneTime() }); } const cRes = await db.query('SELECT * FROM operator_codes WHERE code = $1', [text]); if (cRes.rows.length > 0) { await db.query("UPDATE users SET role = 'operator', full_name = $1, linked_code = $2, state = 'main_menu' WHERE vk_id = $3", [cRes.rows[0].admin_name, text, senderId]); await context.send('Успех!'); await mainMenu(context, { ...user, role: 'operator' }); } else { await context.send({ message: 'Неверный код', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
         case 'profile_view': if (text === '✏️ Редактировать') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); const editKb = Keyboard.builder().textButton({ label: 'ФИО', color: Keyboard.PRIMARY_COLOR }); if (user.role === 'student') { editKb.textButton({ label: 'Группу', color: Keyboard.PRIMARY_COLOR }); } editKb.row().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }); await context.send({ message: 'Что изменить?', keyboard: editKb.oneTime() }); } else if (text === '❌ Удалить профиль') { await db.query("UPDATE users SET state = 'profile_delete_confirm' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Удалить?', keyboard: Keyboard.builder().textButton({ label: 'Да', color: Keyboard.NEGATIVE_COLOR }).textButton({ label: 'Нет', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } else { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); } break;
         case 'profile_edit_select': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); return; } if (text === 'ФИО') { const s = user.role === 'operator' ? 'edit_tutor_fio' : 'edit_student_fio'; await db.query("UPDATE users SET state = $1 WHERE vk_id = $2", [s, senderId]); await context.send({ message: 'Новое ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } else if (text === 'Группу' && user.role === 'student') { await db.query("UPDATE users SET state = 'edit_student_group' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Новая группа:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;

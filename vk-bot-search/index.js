@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
+const helmet = require('helmet');
 const path = require('path');
 
 // 1. Импорт модулей
@@ -20,14 +21,27 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
 // 5. Настройка Middleware
+// Нужен при деплое за Nginx/Docker — позволяет rate-limiter видеть реальный IP клиента,
+// а не IP прокси. Без этого все запросы выглядят с одного адреса.
+app.set('trust proxy', 1);
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 app.use(express.static('public'));
 
+if (!process.env.SESSION_SECRET) {
+    console.warn('[SECURITY] SESSION_SECRET не задан в .env — используется небезопасный default');
+}
 app.use(session({
     secret: process.env.SESSION_SECRET || 'secret_key_123',
     resave: false,
     saveUninitialized: false,
-    cookie: { maxAge: 24 * 60 * 60 * 1000 }
+    cookie: {
+        maxAge: 24 * 60 * 60 * 1000,
+        httpOnly: true,
+        sameSite: 'strict',
+        secure: process.env.NODE_ENV === 'production'
+    }
 }));
 
 // 6. Подключение маршрутов админки
