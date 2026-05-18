@@ -17,7 +17,8 @@
             <a href="/users" class="nav-link">👥 Пользователи</a>
             <a href="/broadcast" class="nav-link">📢 Рассылка</a>
             <a href="/feedback" class="nav-link active">⚠️ Жалобы</a>
-        </div>
+                    <a href="/logs" class="nav-link<%= typeof currentRoute !== "undefined" && currentRoute === "/logs" ? " active" : "" %>">💻 Логи</a>
+</div>
         <div class="nav-right">
             <a href="/logout" class="nav-logout">🚪 Выход</a>
         </div>

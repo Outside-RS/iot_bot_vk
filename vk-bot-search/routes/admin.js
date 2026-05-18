@@ -848,5 +848,14 @@ router.post('/feedback/delete/:id', requireAuth, async (req, res) => {
         res.status(500).send('Ошибка удаления.');
     }
 });
+// ====== ЛОГИ (Терминал) ======
+
+router.get('/logs', requireAuth, noCache, (req, res) => {
+    res.render('logs', { currentRoute: '/logs' });
+});
+
+router.get('/api/logs', requireAuth, (req, res) => {
+    res.json(global.appLogs || []);
+});
 
 module.exports = router;

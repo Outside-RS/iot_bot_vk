@@ -42,7 +42,7 @@ async function handleMessage(context, vk, groupId) {
         if (messagePayload) {
             if (messagePayload.command === 'logout') {
                 await db.query('DELETE FROM users WHERE vk_id = $1', [senderId]);
-                return context.send({ message: 'Вы вышли.', keyboard: Keyboard.builder().initial(false) });
+                return context.send({ message: 'Вы вышли. Напишите любое сообщение для начала работы.', keyboard: Keyboard.keyboard([]) });
             }
             if (messagePayload.command === 'show_faq_answer') {
                 const faqId = messagePayload.faq_id;

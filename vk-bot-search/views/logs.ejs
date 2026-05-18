@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Логи Бота — Админ-панель</title>
+    <link rel="stylesheet" href="/css/admin.css">
+    <style>
+        .terminal-container {
+            background-color: #0d1117;
+            color: #c9d1d9;
+            font-family: 'Courier New', Courier, monospace;
+            padding: 20px;
+            border-radius: var(--radius);
+            height: calc(100vh - 200px);
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            margin-top: 20px;
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+        }
+        .log-line {
+            margin: 0;
+            padding: 2px 0;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        .log-line:hover {
+            background-color: rgba(255,255,255,0.05);
+        }
+        .log-info { color: #58a6ff; }
+        .log-error { color: #f85149; font-weight: bold; }
+        .log-time { color: #8b949e; margin-right: 10px; }
+        
+        .header-actions {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .auto-scroll-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--text-primary);
+        }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
+        <div class="nav-links">
+            <a href="/" class="nav-link">🏠 Главная</a>
+            <a href="/faq" class="nav-link">📚 База знаний</a>
+            <a href="/tutors" class="nav-link">👨‍🏫 Администраторы</a>
+            <a href="/groups" class="nav-link">📌 Группы VK</a>
+            <a href="/users" class="nav-link">👥 Пользователи</a>
+            <a href="/broadcast" class="nav-link">📢 Рассылка</a>
+            <a href="/feedback" class="nav-link">⚠️ Жалобы</a>
+            <a href="/logs" class="nav-link active">💻 Логи</a>
+        </div>
+        <div class="nav-right">
+            <a href="/logout" class="nav-logout">🚪 Выход</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="header-actions">
+            <h1 class="page-title">💻 Терминал логов</h1>
+            <div class="auto-scroll-wrapper">
+                <input type="checkbox" id="autoScroll" checked>
+                <label for="autoScroll">Автопрокрутка вниз</label>
+            </div>
+        </div>
+
+        <div class="terminal-container" id="terminal">
+            <div id="logs-content">Загрузка логов...</div>
+        </div>
+    </div>
+
+    <script>
+        const terminal = document.getElementById('terminal');
+        const content = document.getElementById('logs-content');
+        const autoScroll = document.getElementById('autoScroll');
+
+        function parseLogLine(line) {
+            // Формат: [2026-05-18 22:50:00] INFO: message
+            const match = line.match(/^\[(.*?)\] (INFO|ERROR): (.*)$/s);
+            if (match) {
+                const [_, time, level, msg] = match;
+                const levelClass = level === 'ERROR' ? 'log-error' : 'log-info';
+                return `<div class="log-line"><span class="log-time">[${time}]</span><span class="${levelClass}">${level}:</span> ${msg}</div>`;
+            }
+            return `<div class="log-line">${line}</div>`;
+        }
+
+        async function fetchLogs() {
+            try {
+                const res = await fetch('/api/logs');
+                const logs = await res.json();
+                
+                content.innerHTML = logs.map(parseLogLine).join('');
+                
+                if (autoScroll.checked) {
+                    terminal.scrollTop = terminal.scrollHeight;
+                }
+            } catch (e) {
+                console.error("Ошибка обновления логов", e);
+            }
+        }
+
+        // Запрашиваем логи каждую секунду
+        fetchLogs();
+        setInterval(fetchLogs, 1000);
+    </script>
+</body>
+</html>
