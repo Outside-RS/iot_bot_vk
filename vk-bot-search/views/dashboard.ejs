@@ -19,7 +19,8 @@
             <a href="/groups" class="nav-link">📌 Группы VK</a>
             <a href="/users" class="nav-link">👥 Пользователи</a>
             <a href="/broadcast" class="nav-link">📢 Рассылка</a>
-        </div>
+                    <a href="/feedback" class="nav-link<%= typeof currentRoute !== "undefined" && currentRoute === "/feedback" ? " active" : "" %>">⚠️ Жалобы</a>
+</div>
         <div class="nav-right">
             <a href="/logout" class="nav-logout">🚪 Выход</a>
         </div>
@@ -169,8 +170,13 @@
                     </div>
 
                     <div class="info-box" id="gigachatKeyInfo" style="display: none;">
-                        Текущий ключ: <code id="gigachatMaskedKey"></code>
-                        <br><small>Оставьте поле пустым, чтобы сохранить текущий ключ</small>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                Текущий ключ: <code id="gigachatMaskedKey"></code>
+                                <br><small>Оставьте поле пустым, чтобы сохранить текущий</small>
+                            </div>
+                            <button class="btn btn-danger btn-sm" onclick="deleteGigaChatKey()">Удалить ключ</button>
+                        </div>
                     </div>
                 </div>
 
@@ -302,6 +308,29 @@
             } finally {
                 btn.disabled = false;
                 btn.textContent = '💾 Сохранить';
+            }
+        }
+
+        async function deleteGigaChatKey() {
+            if (!confirm('Вы уверены, что хотите удалить ключ GigaChat? ИИ-ответы через Сбербанк перестанут работать.')) return;
+
+            const result = document.getElementById('aiSaveResult');
+            try {
+                const res = await fetch('/ai-settings/gigachat-key', { method: 'DELETE' });
+                const data = await res.json();
+
+                if (data.success) {
+                    result.className = 'ai-save-result success';
+                    result.textContent = '✅ ' + data.message;
+                    result.style.display = 'block';
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    throw new Error(data.error || 'Неизвестная ошибка');
+                }
+            } catch (e) {
+                result.className = 'ai-save-result error';
+                result.textContent = '❌ ' + e.message;
+                result.style.display = 'block';
             }
         }
     </script>

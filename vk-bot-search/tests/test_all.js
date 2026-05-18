@@ -135,7 +135,7 @@ describe('ai_service.js — prepareMessages', () => {
         const result = prepareMessages(messages, '');
         // system + 6 last = 7
         assert.equal(result.length, 7);
-        assert.equal(result[1].content, 'Сообщение 4'); // первое из последних 6
+        assert.equal(result[1].content, '[ВОПРОС СТУДЕНТА]: Сообщение 4\n[КОНЕЦ ВОПРОСА]'); // первое из последних 6
     });
 
     it('Работает с пустым массивом сообщений', () => {

@@ -888,3 +888,36 @@ tbody tr:last-child td {
         padding: 15px;
     }
 }
+
+/* === УВЕДОМЛЕНИЯ (Toasts) === */
+.toast-notification {
+    visibility: hidden;
+    min-width: 250px;
+    margin-left: -125px;
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    text-align: center;
+    border-radius: var(--radius);
+    padding: 16px;
+    position: fixed;
+    z-index: 1000;
+    left: 50%;
+    bottom: 30px;
+    font-size: 14px;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--accent);
+    opacity: 0;
+    transition: opacity 0.5s, bottom 0.5s, visibility 0.5s;
+}
+
+.toast-notification.show {
+    visibility: visible;
+    opacity: 1;
+    bottom: 50px;
+}
+.toast-notification.success {
+    border-color: var(--success);
+}
+.toast-notification.error {
+    border-color: var(--danger);
+}

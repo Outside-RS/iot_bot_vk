@@ -19,7 +19,8 @@
             <a href="/groups" class="nav-link">📌 Группы VK</a>
             <a href="/users" class="nav-link">👥 Пользователи</a>
             <a href="/broadcast" class="nav-link">📢 Рассылка</a>
-        </div>
+                    <a href="/feedback" class="nav-link<%= typeof currentRoute !== "undefined" && currentRoute === "/feedback" ? " active" : "" %>">⚠️ Жалобы</a>
+</div>
         <div class="nav-right">
             <a href="/logout" class="nav-logout">🚪 Выход</a>
         </div>
@@ -53,7 +54,7 @@
                 </div>
 
                 <div class="form-group">
-                    <label>Ключевые слова</label>
+                    <label>Ключевые слова <small style="color: var(--text-muted);">— фразы через запятую</small></label>
                     <input type="text" name="keywords" value="<%= item.keywords || '' %>">
                 </div>
 

@@ -19,6 +19,13 @@ async function runMigration() {
         // Включаем расширение для нечеткого поиска (триграммы)
         await db.query('CREATE EXTENSION IF NOT EXISTS pg_trgm;');
 
+        // Сохраняем настройки ИИ перед сносом таблиц
+        let savedSettings = null;
+        try {
+            const r = await db.query('SELECT * FROM app_settings WHERE id = TRUE');
+            if (r.rows.length > 0) savedSettings = r.rows[0];
+        } catch (_) { /* таблица ещё не существует — ок */ }
+
         console.log('Очистка таблиц...');
         await db.query(`
             DROP TABLE IF EXISTS messages CASCADE;
@@ -128,7 +135,31 @@ async function runMigration() {
                 gigachat_model TEXT DEFAULT 'GigaChat-2'
             );
             INSERT INTO app_settings (id) VALUES (TRUE) ON CONFLICT DO NOTHING;
+
+            CREATE TABLE feedback (
+                id SERIAL PRIMARY KEY,
+                vk_id BIGINT NOT NULL,
+                text TEXT NOT NULL,
+                status TEXT DEFAULT 'new',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         `);
+
+        // Восстанавливаем сохранённые настройки ИИ (если были) или берём из .env как fallback
+        const restoredKey = (savedSettings && savedSettings.gigachat_key) || process.env.GIGACHAT_AUTH_KEY || null;
+        const restoredScope = (savedSettings && savedSettings.gigachat_scope) || process.env.GIGACHAT_SCOPE || 'GIGACHAT_API_PERS';
+        const restoredOllamaUrl = (savedSettings && savedSettings.ollama_url) || process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+        const restoredOllamaModel = (savedSettings && savedSettings.ollama_model) || process.env.OLLAMA_MODEL || 'qwen2.5:7b';
+        const restoredGigaModel = (savedSettings && savedSettings.gigachat_model) || 'GigaChat-2';
+
+        await db.query(
+            `UPDATE app_settings SET
+                gigachat_key = $1, gigachat_scope = $2,
+                ollama_url = $3, ollama_model = $4, gigachat_model = $5
+             WHERE id = TRUE`,
+            [restoredKey, restoredScope, restoredOllamaUrl, restoredOllamaModel, restoredGigaModel]
+        );
+        console.log('✅ Настройки ИИ восстановлены' + (savedSettings ? ' из предыдущей БД.' : ' из .env.'));
 
         // Тестовый администратор
         await db.query(`
@@ -144,7 +175,10 @@ async function runMigration() {
             const faqData = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
 
             for (const item of faqData) {
-                const keywordsStr = Array.isArray(item.keywords) ? item.keywords.join(' ') : (item.keywords || '');
+                const keywordsStr = (Array.isArray(item.keywords) ? item.keywords : (item.keywords || '').split(','))
+                    .map(k => k.trim())
+                    .filter(k => k.length > 0)
+                    .join(', ');
 
                 await db.query(
                     `INSERT INTO faq (category, question, answer, keywords) VALUES ($1, $2, $3, $4)`,

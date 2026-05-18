@@ -19,7 +19,8 @@
             <a href="/groups" class="nav-link">📌 Группы VK</a>
             <a href="/users" class="nav-link">👥 Пользователи</a>
             <a href="/broadcast" class="nav-link active">📢 Рассылка</a>
-        </div>
+                    <a href="/feedback" class="nav-link<%= typeof currentRoute !== "undefined" && currentRoute === "/feedback" ? " active" : "" %>">⚠️ Жалобы</a>
+</div>
         <div class="nav-right">
             <a href="/logout" class="nav-logout">🚪 Выход</a>
         </div>

@@ -203,6 +203,21 @@ router.post('/ai-settings', requireAuth, async (req, res) => {
     }
 });
 
+// === API: Удаление ключа GigaChat ===
+router.delete('/ai-settings/gigachat-key', requireAuth, async (req, res) => {
+    try {
+        await db.query('UPDATE app_settings SET gigachat_key = NULL WHERE id = TRUE');
+        const { invalidateSettingsCache, resetGigaChatToken } = require('../ai_service');
+        invalidateSettingsCache();
+        resetGigaChatToken();
+        console.log('[Admin] GigaChat ключ удалён');
+        res.json({ success: true, message: 'Ключ удалён' });
+    } catch (e) {
+        console.error('[Admin] Ошибка удаления ключа:', e.message);
+        res.status(500).json({ error: 'Не удалось удалить ключ.' });
+    }
+});
+
 // === БАЗА ЗНАНИЙ (FAQ) ===
 
 // 1. Просмотр списка
@@ -222,15 +237,89 @@ router.get('/faq', requireAuth, noCache, async (req, res) => {
     }
 });
 
-// 2. Добавление вопроса
+// 2. Импорт FAQ из JSON в БД (upsert по вопросу)
+router.post('/faq/import-json', requireAuth, async (req, res) => {
+    const data = req.body;
+    if (!Array.isArray(data)) {
+        return res.status(400).json({ error: 'Ожидается массив объектов JSON.' });
+    }
+
+    let added = 0, updated = 0, skipped = 0;
+
+    for (const item of data) {
+        if (!item.question || !item.answer) { skipped++; continue; }
+
+        const keywords = (Array.isArray(item.keywords) ? item.keywords : (item.keywords || '').split(','))
+            .map(k => k.trim())
+            .filter(k => k.length > 0)
+            .join(', ');
+
+        try {
+            const existing = await db.query('SELECT id, answer, keywords FROM faq WHERE question = $1', [item.question]);
+
+            if (existing.rows.length > 0) {
+                const row = existing.rows[0];
+                if (row.answer !== item.answer || row.keywords !== keywords) {
+                    await db.query(
+                        'UPDATE faq SET category = $1, answer = $2, keywords = $3 WHERE id = $4',
+                        [item.category || '', item.answer, keywords, row.id]
+                    );
+                    updated++;
+                }
+            } else {
+                await db.query(
+                    'INSERT INTO faq (category, question, answer, keywords) VALUES ($1, $2, $3, $4)',
+                    [item.category || '', item.question, item.answer, keywords]
+                );
+                added++;
+            }
+        } catch (e) {
+            console.error('[Admin] FAQ import item error:', e.message);
+            skipped++;
+        }
+    }
+
+    console.log(`[Admin] FAQ import: добавлено ${added}, обновлено ${updated}, пропущено ${skipped}`);
+    res.json({ success: true, added, updated, skipped });
+});
+
+// 3. Экспорт FAQ из БД в faq_data.json
+router.post('/faq/export-json', requireAuth, async (_req, res) => {
+    try {
+        const result = await db.query('SELECT category, question, answer, keywords FROM faq ORDER BY category ASC, id ASC');
+        const data = result.rows.map(row => ({
+            category: row.category || '',
+            question: row.question,
+            answer: row.answer,
+            keywords: row.keywords ? row.keywords.split(',').map(k => k.trim()).filter(k => k.length > 0) : []
+        }));
+        const fs = require('fs');
+        const path = require('path');
+        const filePath = path.join(__dirname, '..', 'faq_data.json');
+        fs.writeFileSync(filePath, JSON.stringify(data, null, 4), 'utf8');
+        console.log(`[Admin] faq_data.json обновлён: ${data.length} записей`);
+        res.redirect('/faq?success=' + encodeURIComponent(`✅ faq_data.json обновлён (${data.length} вопросов)`));
+    } catch (e) {
+        console.error('[Admin] FAQ export error:', e.message);
+        res.redirect('/faq?error=' + encodeURIComponent('Ошибка при экспорте в файл.'));
+    }
+});
+
+// 3. Добавление вопроса
 router.post('/faq/add', requireAuth, noCache, async (req, res) => {
     const { category, question, answer, keywords } = req.body;
 
     try {
+        const normalizedKeywords = (keywords || '')
+            .split(',')
+            .map(k => k.trim())
+            .filter(k => k.length > 0)
+            .join(', ');
+
         // 2. Сохраняем в базу (tsvector генерируется сам)
         await db.query(
             `INSERT INTO faq (category, question, answer, keywords) VALUES ($1, $2, $3, $4)`,
-            [category, question, answer, keywords]
+            [category, question, answer, normalizedKeywords]
         );
 
         // 3. Редирект с успехом (PRG паттерн)
@@ -276,11 +365,17 @@ router.post('/faq/edit/:id', requireAuth, noCache, async (req, res) => {
     const id = req.params.id;
 
     try {
+        const normalizedKeywords = (keywords || '')
+            .split(',')
+            .map(k => k.trim())
+            .filter(k => k.length > 0)
+            .join(', ');
+
         await db.query(
             `UPDATE faq 
              SET category = $1, question = $2, answer = $3, keywords = $4
              WHERE id = $5`,
-            [category, question, answer, keywords, id]
+            [category, question, answer, normalizedKeywords, id]
         );
 
         res.redirect('/faq'); // Возвращаемся к списку
@@ -709,6 +804,48 @@ router.post('/users/promote-all', requireAuth, noCache, async (req, res) => {
     } catch (e) {
         console.error('[Admin] Users error:', e.message);
         res.redirect('/users?error=' + encodeURIComponent('Внутренняя ошибка сервера.'));
+    }
+});
+// ====== ОТЗЫВЫ И ЖАЛОБЫ ======
+
+// 1. Страница списка отзывов
+router.get('/feedback', requireAuth, noCache, async (req, res) => {
+    try {
+        const result = await db.query(`
+            SELECT f.id, f.vk_id, f.text, f.status, f.created_at, u.full_name, u.role
+            FROM feedback f
+            JOIN users u ON f.vk_id = u.vk_id
+            ORDER BY f.created_at DESC
+        `);
+        res.render('feedback', { feedbackList: result.rows, currentRoute: '/feedback' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Ошибка при загрузке отзывов.');
+    }
+});
+
+// 2. Смена статуса
+router.post('/feedback/status/:id', requireAuth, async (req, res) => {
+    const id = req.params.id;
+    const { status } = req.body;
+    try {
+        await db.query('UPDATE feedback SET status = $1 WHERE id = $2', [status, id]);
+        res.redirect('/feedback');
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Ошибка изменения статуса.');
+    }
+});
+
+// 3. Удаление
+router.post('/feedback/delete/:id', requireAuth, async (req, res) => {
+    const id = req.params.id;
+    try {
+        await db.query('DELETE FROM feedback WHERE id = $1', [id]);
+        res.redirect('/feedback');
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Ошибка удаления.');
     }
 });
 

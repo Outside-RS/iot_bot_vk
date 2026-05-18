@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Жалобы — Админ-панель</title>
+    <link rel="stylesheet" href="/css/admin.css">
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
+        <div class="nav-links">
+            <a href="/" class="nav-link">🏠 Главная</a>
+            <a href="/faq" class="nav-link">📚 База знаний</a>
+            <a href="/tutors" class="nav-link">👨‍🏫 Администраторы</a>
+            <a href="/groups" class="nav-link">📌 Группы VK</a>
+            <a href="/users" class="nav-link">👥 Пользователи</a>
+            <a href="/broadcast" class="nav-link">📢 Рассылка</a>
+            <a href="/feedback" class="nav-link active">⚠️ Жалобы</a>
+        </div>
+        <div class="nav-right">
+            <a href="/logout" class="nav-logout">🚪 Выход</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <h1 class="page-title">⚠️ Жалобы и Отзывы пользователей</h1>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Дата</th>
+                        <th>Пользователь</th>
+                        <th>Текст сообщения</th>
+                        <th>Статус</th>
+                        <th>Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <% if (feedbackList.length === 0) { %>
+                        <tr>
+                            <td colspan="6" class="empty-state">
+                                <div class="icon">⚠️</div>
+                                Нет обращений
+                            </td>
+                        </tr>
+                    <% } else { %>
+                        <% feedbackList.forEach(f => { %>
+                            <tr style="<%= f.status === 'new' ? 'background: rgba(217, 119, 6, 0.15);' : '' %>">
+                                <td>#<%= f.id %></td>
+                                <td><%= new Date(f.created_at).toLocaleString('ru-RU') %></td>
+                                <td>
+                                    <strong><%= f.full_name %></strong><br>
+                                    <small style="color: var(--text-muted);"><%= f.role %></small><br>
+                                    <a href="https://vk.com/id<%= f.vk_id %>" target="_blank" style="color: var(--accent); text-decoration: none; font-size: 12px;">VK ID: <%= f.vk_id %></a>
+                                </td>
+                                <td style="max-width: 400px; white-space: pre-wrap;"><%= f.text %></td>
+                                <td>
+                                    <% if (f.status === 'new') { %>
+                                        <span class="badge badge-warning">Новое</span>
+                                    <% } else if (f.status === 'in_progress') { %>
+                                        <span class="badge badge-info">В работе</span>
+                                    <% } else if (f.status === 'resolved') { %>
+                                        <span class="badge badge-success">Решено</span>
+                                    <% } %>
+                                </td>
+                                <td class="actions">
+                                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                        <form method="POST" action="/feedback/status/<%= f.id %>">
+                                            <select name="status" onchange="this.form.submit()" style="padding: 6px; border-radius: var(--radius); border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); font-family: inherit;">
+                                                <option value="new" <%= f.status === 'new' ? 'selected' : '' %>>Новое</option>
+                                                <option value="in_progress" <%= f.status === 'in_progress' ? 'selected' : '' %>>В работе</option>
+                                                <option value="resolved" <%= f.status === 'resolved' ? 'selected' : '' %>>Решено</option>
+                                            </select>
+                                        </form>
+                                        <form method="POST" action="/feedback/delete/<%= f.id %>" onsubmit="return confirm('Точно удалить этот отзыв?');" style="display:inline;">
+                                            <button type="submit" class="btn btn-danger btn-sm" title="Удалить">🗑</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        <% }) %>
+                    <% } %>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>

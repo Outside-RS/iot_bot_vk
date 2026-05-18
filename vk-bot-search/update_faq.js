@@ -31,7 +31,10 @@ async function updateFaq() {
             // Ищем по вопросу
             const checkRes = await db.query('SELECT id, answer, keywords FROM faq WHERE question = $1', [item.question]);
 
-            const newKeywords = Array.isArray(item.keywords) ? item.keywords.join(' ') : (item.keywords || '');
+            const newKeywords = (Array.isArray(item.keywords) ? item.keywords : (item.keywords || '').split(','))
+                .map(k => k.trim())
+                .filter(k => k.length > 0)
+                .join(', ');
 
             if (checkRes.rows.length > 0) {
                 // Если вопрос есть, проверяем изменения
