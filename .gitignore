@@ -1,5 +1,14 @@
-*.env
+.env
+.env.*
+!.env.example
+*.log
 api.yml
-
+.vscode/
+.idea/
 vk-bot-search/artifacts/
 .claude/
+frpc.exe
+frpc.toml
+*.pid
+*.seed
+*.pid.lock

@@ -107,6 +107,31 @@ async function handleMessage(context, vk, groupId) {
                 }
                 return;
             }
+            if (messagePayload.command === 'ask_ai') {
+                const uRes = await db.query('SELECT * FROM users WHERE vk_id = $1', [senderId]);
+                const localUser = uRes.rows[0];
+                if (!localUser) return;
+                
+                const qText = messagePayload.question || text || "Вопрос для ИИ";
+                const sqlQuery = `
+                    SELECT id, question, answer,
+                        (ts_rank(search_vector, to_tsquery('russian', regexp_replace(plainto_tsquery('russian', $1)::text, '&', '|', 'g'))) * 1.0 +
+                         similarity(question || ' ' || COALESCE(keywords, ''), $1) * 0.5) AS score
+                    FROM faq
+                    WHERE search_vector @@ to_tsquery('russian', regexp_replace(plainto_tsquery('russian', $1)::text, '&', '|', 'g'))
+                       OR similarity(question || ' ' || COALESCE(keywords, ''), $1) > 0.1
+                    ORDER BY score DESC
+                    LIMIT 5;
+                `;
+                try {
+                    const res = await db.query(sqlQuery, [qText]);
+                    const faqHints = res.rows.map(r => `Вопрос: ${r.question}\nОтвет: ${r.answer}`).join('\n---\n');
+                    await enqueueAiTask(context, localUser, qText, faqHints, groupId);
+                } catch (e) {
+                    await enqueueAiTask(context, localUser, qText, '', groupId);
+                }
+                return;
+            }
         }
 
         // 2. ПОЛУЧЕНИЕ ЮЗЕРА
@@ -173,7 +198,8 @@ async function processState(context, user, vk, groupId) {
                 return mainMenu(context, user);
             }
 
-            console.log(`[SEARCH] Запрос от ${senderId} (${text.length} символов)`);
+            const safeText = text || '';
+            console.log(`[SEARCH] Запрос от ${senderId} (${safeText.length} символов): "${safeText}"`);
 
             // 1. ЕДИНЫЙ ПОИСК (Лексика + Нечеткий)
             // - plainto_tsquery('russian', text) -> превращает "где получить" в "где & получить"
@@ -192,7 +218,7 @@ async function processState(context, user, vk, groupId) {
             `;
 
             try {
-                const res = await db.query(sqlQuery, [text]);
+                const res = await db.query(sqlQuery, [safeText]);
 
                 // Фильтруем мусор: порог 0.15 отсекает шумовые совпадения (score < 0.1)
                 const hits = res.rows.filter(r => r.score > 0.15);
@@ -207,10 +233,13 @@ async function processState(context, user, vk, groupId) {
                     const isLeader = hits.length === 1 || (hits[1] && best.score > hits[1].score * 1.5);
 
                     if (isLeader) {
+                        console.log(`[FAQ] Выдан ответ: "${best.question}"`);
                         await context.send({
                             message: `📚 ${best.question}\n\n${best.answer}`,
                             keyboard: Keyboard.builder()
-                                .textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send', question: text }, color: Keyboard.POSITIVE_COLOR })
+                                .textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send', question: safeText }, color: Keyboard.POSITIVE_COLOR })
+                                .row()
+                                .textButton({ label: '🤖 Спросить ИИ-ассистента', payload: { command: 'ask_ai', question: safeText }, color: Keyboard.PRIMARY_COLOR })
                                 .row()
                                 .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR })
                                 .oneTime()
@@ -228,7 +257,9 @@ async function processState(context, user, vk, groupId) {
                         }).row();
                     });
 
-                    kb.textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send', question: text }, color: Keyboard.POSITIVE_COLOR })
+                    kb.textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send', question: safeText }, color: Keyboard.POSITIVE_COLOR })
+                        .row()
+                        .textButton({ label: '🤖 Спросить ИИ-ассистента', payload: { command: 'ask_ai', question: safeText }, color: Keyboard.PRIMARY_COLOR })
                         .row()
                         .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR });
 

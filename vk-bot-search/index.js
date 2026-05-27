@@ -96,6 +96,16 @@ async function start() {
         // Запускаем веб-сервер
         app.listen(PORT, () => {
             console.log(`🌍 Админка доступна: http://localhost:${PORT}`);
+            
+            // Автоматический запуск frpc туннеля (без Docker)
+            const fs = require('fs');
+            const { spawn } = require('child_process');
+            if (fs.existsSync('./frpc.exe')) {
+                console.log('🔗 Запускаем проброс портов (frpc)...');
+                const frp = spawn('./frpc.exe', ['-c', './frpc.toml']);
+                frp.stdout.on('data', data => console.log(`[FRPC] ${data.toString().trim()}`));
+                frp.stderr.on('data', data => console.error(`[FRPC ERR] ${data.toString().trim()}`));
+            }
         });
 
     } catch (err) {

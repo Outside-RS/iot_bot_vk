@@ -78,17 +78,17 @@ describe('ai_service.js — buildSystemPrompt', () => {
     it('Включает контекст FAQ когда он передан', () => {
         const prompt = buildSystemPrompt('Стажировки: career.urfu.ru');
         assert.ok(prompt.includes('Стажировки: career.urfu.ru'));
-        assert.ok(prompt.includes('контекст базы знаний'));
+        assert.ok(prompt.includes('КОНТЕКСТ ИЗ БАЗЫ ЗНАНИЙ'));
     });
 
     it('Сообщает об отсутствии контекста при пустой строке', () => {
         const prompt = buildSystemPrompt('');
-        assert.ok(prompt.includes('нет информации'));
+        assert.ok(prompt.includes('не содержит информации'));
     });
 
     it('Сообщает об отсутствии контекста при null', () => {
         const prompt = buildSystemPrompt(null);
-        assert.ok(prompt.includes('нет информации'));
+        assert.ok(prompt.includes('не содержит информации'));
     });
 
     it('Содержит инструкцию ТОЛЬКО на русском', () => {
@@ -99,23 +99,23 @@ describe('ai_service.js — buildSystemPrompt', () => {
 
     it('Содержит лимит по длине ответа', () => {
         const prompt = buildSystemPrompt('');
-        assert.ok(prompt.includes('2-3 предложения'));
+        assert.ok(prompt.includes('не более 5 предложений'));
     });
 
     it('Содержит ограничение тематики (только университет)', () => {
         const prompt = buildSystemPrompt('');
-        assert.ok(prompt.includes('ТОЛЬКО на вопросы, связанные с университетом'));
+        assert.ok(prompt.includes('напрямую связанные с университетом'));
     });
 
     it('Содержит запрет на написание кода', () => {
         const prompt = buildSystemPrompt('');
-        assert.ok(prompt.includes('Никогда не пиши код'));
+        assert.ok(prompt.includes('На запрос написать код'));
     });
 
     it('Содержит инструкцию отказа на нерелевантные темы', () => {
         const prompt = buildSystemPrompt('');
         assert.ok(prompt.includes('программирование'));
-        assert.ok(prompt.includes('вежливо откажи'));
+        assert.ok(prompt.includes('ПОЛНОСТЬЮ ИГНОРИРУЙ'));
     });
 });
 
@@ -127,15 +127,15 @@ describe('ai_service.js — prepareMessages', () => {
         assert.equal(result.length, 2);
     });
 
-    it('Обрезает историю до 6 последних сообщений', () => {
+    it('Обрезает историю до 4 последних сообщений', () => {
         const messages = Array.from({ length: 10 }, (_, i) => ({
             role: i % 2 === 0 ? 'user' : 'assistant',
             content: `Сообщение ${i}`
         }));
         const result = prepareMessages(messages, '');
-        // system + 6 last = 7
-        assert.equal(result.length, 7);
-        assert.equal(result[1].content, '[ВОПРОС СТУДЕНТА]: Сообщение 4\n[КОНЕЦ ВОПРОСА]'); // первое из последних 6
+        // system + 4 last = 5
+        assert.equal(result.length, 5);
+        assert.ok(result[1].content.includes('[ВОПРОС СТУДЕНТА ОБ УНИВЕРСИТЕТЕ]: Сообщение 6')); // первое из последних 4
     });
 
     it('Работает с пустым массивом сообщений', () => {

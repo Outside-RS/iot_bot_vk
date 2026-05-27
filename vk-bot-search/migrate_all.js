@@ -28,6 +28,7 @@ async function runMigration() {
 
         console.log('Очистка таблиц...');
         await db.query(`
+            DROP TABLE IF EXISTS feedback CASCADE;
             DROP TABLE IF EXISTS messages CASCADE;
             DROP TABLE IF EXISTS tickets CASCADE;
             DROP TABLE IF EXISTS faq CASCADE;

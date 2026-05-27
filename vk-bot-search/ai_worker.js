@@ -22,7 +22,7 @@ async function processTask(task) {
             } catch (err) {
                 console.log(`[Worker] Ollama error for task ${task.id}, attempting GigaChat...`);
                 isOllamaBusy = false;
-                
+
                 if (!isGigaChatBusy) {
                     isGigaChatBusy = true;
                     try {
@@ -52,7 +52,7 @@ async function processTask(task) {
                 isGigaChatBusy = false;
             }
         } else {
-            throw new Error('Both models busy, task skipped'); 
+            throw new Error('Both models busy, task skipped');
         }
 
         if (responseText) {
@@ -73,12 +73,12 @@ async function processTask(task) {
             await db.query("UPDATE users SET ai_context = $1, state = 'ask_question_mode' WHERE vk_id = $2", [JSON.stringify(task.ai_context), task.vk_id]);
             await db.query('DELETE FROM ai_queue WHERE id = $1', [task.id]);
 
-            
+
 
             const kb = Keyboard.builder()
                 .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).row()
                 .textButton({ label: '👨‍💼 Передать админу', payload: { command: 'operator_request' }, color: Keyboard.PRIMARY_COLOR });
-                
+
             await bot.api.messages.send({
                 user_id: task.vk_id,
                 random_id: Math.floor(Math.random() * 1000000),
@@ -86,17 +86,18 @@ async function processTask(task) {
                 keyboard: kb
             });
             console.log(`[Worker] Task ${task.id} processed successfully via ${usedModel}`);
+            console.log(`[AI_RESPONSE] Ответ: "${responseText.substring(0, 500)}${responseText.length > 500 ? '...' : ''}"`);
         }
     } catch (globalErr) {
         console.error(`[Worker] Error processing task ${task.id}:`, globalErr.message);
-        
+
         if (task.attempts < 2) {
             console.log(`[Worker] Task ${task.id} returned to pending (attempts: ${task.attempts})`);
             await db.query("UPDATE ai_queue SET status = 'pending' WHERE id = $1", [task.id]);
         } else {
             console.log(`[Worker] Task ${task.id} marked as error (Poison Pill protection)`);
             await db.query("UPDATE ai_queue SET status = 'error' WHERE id = $1", [task.id]);
-            
+
             const bot = global.bots && global.bots[task.vk_group_id];
             if (bot) {
                 const kb = Keyboard.builder()
@@ -137,12 +138,12 @@ async function processQueue() {
                 WHERE id = $1 
                 RETURNING *
             `, [result.rows[0].id]);
-            
+
             await client.query('COMMIT');
-            
+
             const updatedTask = updatedTaskRes.rows[0];
             console.log(`[Worker] Picked task ${updatedTask.id} (attempt ${updatedTask.attempts})`);
-            
+
             // Запускаем асинхронно БЕЗ await
             processTask(updatedTask);
         } else {

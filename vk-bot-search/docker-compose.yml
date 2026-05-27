@@ -25,7 +25,7 @@ services:
       - .env
     environment:
       POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-224808}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME:-postgres}
     ports:
       - "${DB_PORT:-5433}:5432"
@@ -37,6 +37,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  frpc:
+    image: snowdreamtech/frpc:latest
+    restart: unless-stopped
+    volumes:
+      - ./frpc.toml:/etc/frp/frpc.toml
 
 volumes:
   postgres_data:
