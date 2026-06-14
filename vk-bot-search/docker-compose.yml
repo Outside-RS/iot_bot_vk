@@ -43,6 +43,8 @@ services:
     restart: unless-stopped
     volumes:
       - ./frpc.toml:/etc/frp/frpc.toml
+    depends_on:
+      - bot
 
 volumes:
   postgres_data:

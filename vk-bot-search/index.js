@@ -25,7 +25,17 @@ app.set('views', path.join(__dirname, 'views'));
 // Нужен при деплое за Nginx/Docker — позволяет rate-limiter видеть реальный IP клиента,
 // а не IP прокси. Без этого все запросы выглядят с одного адреса.
 app.set('trust proxy', 1);
+const rateLimit = require('express-rate-limit');
+
+// Ограничение: максимум 100 запросов с одного IP в минуту
+const limiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 минута
+    max: 100, // Ограничение каждого IP до 100 запросов за окно (1 минута)
+    message: 'Слишком много запросов с вашего IP, пожалуйста, подождите минуту.'
+});
+
 app.use(helmet({ contentSecurityPolicy: false }));
+app.use(limiter);
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public'));

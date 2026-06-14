@@ -305,7 +305,29 @@ router.post('/faq/export-json', requireAuth, async (_req, res) => {
     }
 });
 
-// 3. Добавление вопроса
+// 2b. Скачать базу знаний как JSON-файл прямо в браузер
+router.get('/faq/download-json', requireAuth, async (_req, res) => {
+    try {
+        const result = await db.query('SELECT category, question, answer, keywords FROM faq ORDER BY category ASC, id ASC');
+        const data = result.rows.map(row => ({
+            category: row.category || '',
+            question: row.question,
+            answer: row.answer,
+            keywords: row.keywords ? row.keywords.split(',').map(k => k.trim()).filter(k => k.length > 0) : []
+        }));
+        const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+        const filename = `faq_backup_${date}.json`;
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.send(JSON.stringify(data, null, 4));
+        console.log(`[Admin] Скачана база знаний: ${data.length} записей`);
+    } catch (e) {
+        console.error('[Admin] FAQ download error:', e.message);
+        res.status(500).send('Ошибка при скачивании базы.');
+    }
+});
+
+
 router.post('/faq/add', requireAuth, noCache, async (req, res) => {
     const { category, question, answer, keywords } = req.body;
 

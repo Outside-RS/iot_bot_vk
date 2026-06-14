@@ -88,7 +88,7 @@ async function handleMessage(context, vk, groupId) {
                 return;
             }
             if (messagePayload.command === 'confirm_send' || messagePayload.command === 'operator_request') {
-                const userRes = await db.query('SELECT group_number, full_name, ai_context FROM users WHERE vk_id = $1', [senderId]);
+                const userRes = await db.query('SELECT group_number, full_name, ai_context, pending_attachments FROM users WHERE vk_id = $1', [senderId]);
                 const user = userRes.rows[0];
 
                 let qText = messagePayload.question || text || "Вопрос из AI диалога";
@@ -98,12 +98,26 @@ async function handleMessage(context, vk, groupId) {
                     const lastUserMsg = [...user.ai_context].reverse().find(m => m.role === 'user');
                     if (lastUserMsg) qText = lastUserMsg.content;
                 }
-                await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
+
+                // Достаём временно сохранённые вложения (фото) и очищаем их
+                const pendingAtts = user.pending_attachments || [];
+                await db.query("UPDATE users SET state = 'main_menu', pending_attachments = NULL WHERE vk_id = $1", [senderId]);
+
                 const newT = await db.query("INSERT INTO tickets (student_vk_id, question) VALUES ($1, $2) RETURNING id", [senderId, qText]);
                 await context.send({ message: `✅ Вопрос отправлен администратору.`, keyboard: Keyboard.builder().textButton({ label: '🗂 Мои обращения', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR }).oneTime() });
                 const ops = await db.query(`SELECT vk_id FROM users WHERE role = 'operator'`);
+                const attStr = pendingAtts.join(',');
+                const photoNote = pendingAtts.length > 0 ? `\n📎 Прикреплено фото: ${pendingAtts.length} шт.` : '';
                 for (let op of ops.rows) {
-                    try { await vk.api.messages.send({ peer_id: op.vk_id, message: `🆘 Новый вопрос #${newT.rows[0].id} от ${user.full_name}:\n"${qText}"`, random_id: 0, keyboard: Keyboard.builder().textButton({ label: `Взять #${newT.rows[0].id}`, payload: { command: 'take_ticket', ticket_id: newT.rows[0].id }, color: Keyboard.POSITIVE_COLOR }).inline() }); } catch (e) { }
+                    try {
+                        await vk.api.messages.send({
+                            peer_id: op.vk_id,
+                            message: `🆘 Новый вопрос #${newT.rows[0].id} от ${user.full_name}:\n"${qText}"${photoNote}`,
+                            attachment: attStr || undefined,
+                            random_id: 0,
+                            keyboard: Keyboard.builder().textButton({ label: `Взять #${newT.rows[0].id}`, payload: { command: 'take_ticket', ticket_id: newT.rows[0].id }, color: Keyboard.POSITIVE_COLOR }).inline()
+                        });
+                    } catch (e) { }
                 }
                 return;
             }
@@ -111,7 +125,7 @@ async function handleMessage(context, vk, groupId) {
                 const uRes = await db.query('SELECT * FROM users WHERE vk_id = $1', [senderId]);
                 const localUser = uRes.rows[0];
                 if (!localUser) return;
-                
+
                 const qText = messagePayload.question || text || "Вопрос для ИИ";
                 const sqlQuery = `
                     SELECT id, question, answer,
@@ -194,8 +208,29 @@ async function processState(context, user, vk, groupId) {
                 if (text === '🏠 В меню (отменить)') {
                     await db.query("DELETE FROM ai_queue WHERE vk_id = $1 AND status IN ('pending', 'processing')", [senderId]);
                 }
-                await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
+                await db.query("UPDATE users SET state = 'main_menu', pending_attachments = NULL WHERE vk_id = $1", [senderId]);
                 return mainMenu(context, user);
+            }
+
+            // 0.5. Обработка фото
+            const photoAtts = attachments.filter(a => a.type === 'photo');
+            if (photoAtts.length > 0) {
+                const attStrings = resolveAttachments(photoAtts);
+                await db.query('UPDATE users SET pending_attachments = $1 WHERE vk_id = $2', [JSON.stringify(attStrings), senderId]);
+
+                // Если фото без текста — предупреждаем и ждём текстовый вопрос
+                if (!text) {
+                    await context.send({
+                        message: `📷 Я получил ${photoAtts.length} фото, но не умею анализировать изображения.\n\nВведите ваш вопрос текстом — и фото будут автоматически приложены к нему, если вы решите передать вопрос тьютору.`,
+                        keyboard: Keyboard.builder()
+                            .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR })
+                            .oneTime()
+                    });
+                    return;
+                } else {
+                    // Если фото с текстом — предупреждаем, что анализируем только текст
+                    await context.send(`📷 Я сохранил прикрепленные фото (${photoAtts.length} шт.), но сейчас я проанализирую только ваш текст.\nЕсли мой ответ не поможет, вы сможете передать вопрос тьютору вместе с этими фото.`);
+                }
             }
 
             const safeText = text || '';
@@ -314,7 +349,7 @@ async function processState(context, user, vk, groupId) {
                     if (q.rows.length === 0) { await context.send('Очередь пуста 🎉'); await mainMenu(context, user); }
                     else {
                         let msg = '📥 Очередь:\n'; let kb = Keyboard.builder();
-                        q.rows.forEach(t => { msg += `\n🆔 #${t.id} [${t.full_name} ${t.group_number}]: ${t.question.substring(0, 50)}...`; kb.textButton({ label: `Взять #${t.id}`, payload: { command: 'take_ticket', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR }).row(); });
+                        q.rows.forEach(t => { msg += `\n🆔 #${t.id} [${t.full_name} ${t.group_number}]: ${t.question}`; kb.textButton({ label: `Взять #${t.id}`, payload: { command: 'take_ticket', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR }).row(); });
                         await context.send({ message: msg, keyboard: kb.inline() }); await mainMenu(context, user);
                     }
                 } else if (text === '💬 Мои диалоги') {
@@ -322,7 +357,7 @@ async function processState(context, user, vk, groupId) {
                     if (q.rows.length === 0) { await context.send('Нет активных диалогов.'); await mainMenu(context, user); }
                     else {
                         let msg = '💬 Диалоги:\n'; let kb = Keyboard.builder();
-                        q.rows.forEach(t => { msg += `\n🆔 #${t.id} [${t.full_name}]: ${t.question.substring(0, 30)}...`; kb.textButton({ label: `Перейти к #${t.id}`, payload: { command: 'open_chat', ticket_id: t.id }, color: Keyboard.PRIMARY_COLOR }).row(); });
+                        q.rows.forEach(t => { msg += `\n🆔 #${t.id} [${t.full_name}]: ${t.question}`; kb.textButton({ label: `Перейти к #${t.id}`, payload: { command: 'open_chat', ticket_id: t.id }, color: Keyboard.PRIMARY_COLOR }).row(); });
                         await context.send({ message: msg, keyboard: kb.inline() }); await mainMenu(context, user);
                     }
                 } else if (text === '👤 Профиль') {
@@ -341,7 +376,7 @@ async function processState(context, user, vk, groupId) {
                         let msg = '🗂 Ваши обращения:\n'; let kb = Keyboard.builder();
                         q.rows.forEach(t => {
                             const st = (t.status === 'open' ? '⏳' : (t.status === 'active' ? '🟢' : '🏁'));
-                            msg += `\n#${t.id}: ${st}\n❓ ${t.question.substring(0, 40)}...`;
+                            msg += `\n#${t.id}: ${st}\n❓ ${t.question}`;
                             if (t.status === 'active') kb.textButton({ label: `Перейти к #${t.id}`, payload: { command: 'open_chat', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR }).row();
                             else if (t.status === 'open') kb.textButton({ label: `✏️ Упр. #${t.id}`, payload: { command: 'manage_ticket', ticket_id: t.id }, color: Keyboard.SECONDARY_COLOR }).row();
                         });
@@ -370,18 +405,18 @@ async function processState(context, user, vk, groupId) {
             break;
 
         case 'registration_start': if (text === 'Я Студент') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } else if (text === 'Я Администратор') { await db.query("UPDATE users SET state = 'reg_operator_code' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите код:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
-        case 'reg_student_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'registration_start' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', color: Keyboard.POSITIVE_COLOR }).oneTime() }); } if (text.length > 100) return context.send('ФИО слишком длинное.'); if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1, state = 'reg_student_group' WHERE vk_id = $2", [text, senderId]); await context.send({ message: 'Группа:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); break;
+        case 'reg_student_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'registration_start' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', color: Keyboard.POSITIVE_COLOR }).oneTime() }); } if (text.length > 100) return context.send('ФИО слишком длинное.'); if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1, state = 'reg_student_group' WHERE vk_id = $2", [text, senderId]); await context.send({ message: 'Группа:(РИ-XXXXXX)', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); break;
         case 'reg_student_group': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Введите ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } const g = text.toUpperCase(); if (g.length > 20) return context.send('Ошибка группы'); if (!REGEX_GROUP.test(g)) return context.send('Ошибка группы'); await db.query("UPDATE users SET group_number = $1, study_years = 4, role = 'student', state = 'main_menu' WHERE vk_id = $2", [g, senderId]); await context.send('✅ Регистрация успешно завершена!'); await mainMenu(context, { ...user, role: 'student' }); break;
         case 'reg_operator_code': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'registration_start' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', color: Keyboard.POSITIVE_COLOR }).oneTime() }); } const cRes = await db.query('SELECT * FROM operator_codes WHERE code = $1', [text]); if (cRes.rows.length > 0) { await db.query("UPDATE users SET role = 'operator', full_name = $1, linked_code = $2, state = 'main_menu' WHERE vk_id = $3", [cRes.rows[0].admin_name, text, senderId]); await context.send('Успех!'); await mainMenu(context, { ...user, role: 'operator' }); } else { await context.send({ message: 'Неверный код', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
         case 'profile_view': if (text === '✏️ Редактировать') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); const editKb = Keyboard.builder().textButton({ label: 'ФИО', color: Keyboard.PRIMARY_COLOR }); if (user.role === 'student') { editKb.textButton({ label: 'Группу', color: Keyboard.PRIMARY_COLOR }); } editKb.row().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }); await context.send({ message: 'Что изменить?', keyboard: editKb.oneTime() }); } else if (text === '❌ Удалить профиль') { await db.query("UPDATE users SET state = 'profile_delete_confirm' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Удалить?', keyboard: Keyboard.builder().textButton({ label: 'Да', color: Keyboard.NEGATIVE_COLOR }).textButton({ label: 'Нет', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } else { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); } break;
         case 'profile_edit_select': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); return; } if (text === 'ФИО') { const s = user.role === 'operator' ? 'edit_tutor_fio' : 'edit_student_fio'; await db.query("UPDATE users SET state = $1 WHERE vk_id = $2", [s, senderId]); await context.send({ message: 'Новое ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } else if (text === 'Группу' && user.role === 'student') { await db.query("UPDATE users SET state = 'edit_student_group' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Новая группа:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
-        case 'edit_student_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1, state = 'main_menu' WHERE vk_id = $2", [text, senderId]); await context.send('Обновлено.'); await mainMenu(context, user); break;
-        case 'edit_student_group': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } const g2 = text.toUpperCase(); if (!REGEX_GROUP.test(g2)) return context.send('Ошибка'); await db.query("UPDATE users SET group_number = $1, state = 'main_menu' WHERE vk_id = $2", [g2, senderId]); await context.send('Обновлено.'); await mainMenu(context, user); break;
-        case 'edit_tutor_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1 WHERE vk_id = $2", [text, senderId]); await db.query("UPDATE operator_codes SET admin_name = $1 WHERE code = $2", [text, user.linked_code]); await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await context.send('Обновлено.'); await mainMenu(context, user); break;
+        case 'edit_student_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1, state = 'main_menu' WHERE vk_id = $2", [text, senderId]); await context.send('Обновлено!'); await mainMenu(context, user); break;
+        case 'edit_student_group': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } const g2 = text.toUpperCase(); if (!REGEX_GROUP.test(g2)) return context.send('Ошибка'); await db.query("UPDATE users SET group_number = $1, state = 'main_menu' WHERE vk_id = $2", [g2, senderId]); await context.send('Обновлено!'); await mainMenu(context, user); break;
+        case 'edit_tutor_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1 WHERE vk_id = $2", [text, senderId]); await db.query("UPDATE operator_codes SET admin_name = $1 WHERE code = $2", [text, user.linked_code]); await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await context.send('Обновлено!'); await mainMenu(context, user); break;
 
-        case 'profile_delete_confirm': if (text === 'Да') { await db.query('DELETE FROM users WHERE vk_id = $1', [senderId]); await context.send({ message: 'Удален.' }); } else { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); } break;
+        case 'profile_delete_confirm': if (text === 'Да') { await db.query('DELETE FROM users WHERE vk_id = $1', [senderId]); await context.send({ message: 'Профиль удален!' }); } else { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); } break;
         case 'ticket_manage_menu': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); return mainMenu(context, user); } if (text === '❌ Удалить заявку') { await db.query("DELETE FROM tickets WHERE id = $1", [user.current_chat_ticket_id]); await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); await context.send('Удалено.'); return mainMenu(context, user); } if (text === '✏️ Изменить текст') { await db.query("UPDATE users SET state = 'ticket_edit_text' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Новый текст:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
-        case 'ticket_edit_text': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'ticket_manage_menu' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Меню:', keyboard: Keyboard.builder().textButton({ label: '✏️', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '❌', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '🔙', color: Keyboard.SECONDARY_COLOR }) }); } await db.query("UPDATE tickets SET question = $1 WHERE id = $2", [text, user.current_chat_ticket_id]); await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); await context.send('Обновлено.'); return mainMenu(context, user); break;
+        case 'ticket_edit_text': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'ticket_manage_menu' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Меню:', keyboard: Keyboard.builder().textButton({ label: '✏️', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '❌', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '🔙', color: Keyboard.SECONDARY_COLOR }) }); } await db.query("UPDATE tickets SET question = $1 WHERE id = $2", [text, user.current_chat_ticket_id]); await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); await context.send('Обновлено!'); return mainMenu(context, user); break;
     }
 }
 
