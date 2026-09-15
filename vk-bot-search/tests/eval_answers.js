@@ -12,7 +12,7 @@
  * У физлиц один поток GigaChat на аккаунт — на время прогона (около минуты)
  * продовый бот может получать отказы и уходить в резервную модель.
  */
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const { searchFaq, buildDialogHints, getAllFaqText } = require('../faq_search');
 const { askGigaChat } = require('../ai_service');
 const { buildKnownFacts, guardFacts } = require('../fact_guard');

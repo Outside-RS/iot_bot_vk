@@ -1023,3 +1023,125 @@ describe('ai_service — промпт и история (Этап 4)', () => {
     });
 });
 
+// ═══════════════════════════════════════════════════════
+// 9. ЛОГИРОВАНИЕ (Этап 5)
+// ═══════════════════════════════════════════════════════
+
+describe('logger — форматирование', () => {
+    const { formatArg, splitTag, makeClock } = require('../logger')._test;
+
+    // Регрессия: JSON.stringify не видит message у ошибки — в логах было «{}»
+    it('Ошибка выводится текстом с кодом, а не «{}»', () => {
+        const err = new Error('connect ECONNREFUSED 127.0.0.1:5433');
+        err.code = 'ECONNREFUSED';
+        assert.equal(formatArg(err), 'connect ECONNREFUSED 127.0.0.1:5433 [ECONNREFUSED]');
+    });
+
+    // Регрессия: у AggregateError из pg пустой message — в логе было «: .»
+    it('У AggregateError берётся текст вложенных ошибок', () => {
+        const agg = new AggregateError([new Error('connect ECONNREFUSED ::1:5433'), new Error('connect ECONNREFUSED 127.0.0.1:5433')], '');
+        agg.code = 'ECONNREFUSED';
+        const text = formatArg(agg);
+        assert.ok(text.includes('::1:5433') && text.includes('127.0.0.1:5433'), text);
+    });
+
+    it('Тег подсистемы отделяется и приводится к верхнему регистру', () => {
+        assert.deepEqual(splitTag('[Worker] Взята задача 5'), { tag: 'WORKER', msg: 'Взята задача 5' });
+        assert.deepEqual(splitTag('Сообщение без тега'), { tag: 'APP', msg: 'Сообщение без тега' });
+    });
+
+    // Регрессия: время писалось в UTC — 22:22 вместо местных 03:22 следующего дня
+    it('Время — в заданном часовом поясе, включая переход через полночь', () => {
+        const clock = makeClock('Asia/Yekaterinburg');
+        const t = clock(new Date(Date.UTC(2026, 8, 14, 22, 22, 0)));
+        assert.equal(t.stamp, '2026-09-15 03:22:00');
+        assert.equal(t.day, '2026-09-15');
+    });
+});
+
+describe('logger — буфер, файлы, хранение', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { createLogger } = require('../logger');
+
+    const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bot-logs-'));
+    const fixedNow = () => new Date(Date.UTC(2026, 8, 15, 10, 0, 0)); // 15.09.2026 15:00 по Екатеринбургу
+
+    it('Записи ниже уровня отбрасываются', () => {
+        const log = createLogger({ level: 'info' });
+        log.debug('[FSM] подробность');
+        log.info('[BOT] событие');
+        assert.deepEqual(log.entries().map(e => e.tag), ['BOT']);
+    });
+
+    it('entries(since) отдаёт только новые записи — для догрузки на странице', () => {
+        const log = createLogger({});
+        const first = log.info('[A] раз');
+        log.info('[B] два');
+        log.warn('[C] три');
+        assert.deepEqual(log.entries(first.id).map(e => e.tag), ['B', 'C']);
+    });
+
+    it('Буфер в памяти ограничен', () => {
+        const log = createLogger({ bufferSize: 3 });
+        for (let i = 1; i <= 5; i++) log.info(`[T] ${i}`);
+        assert.deepEqual(log.entries().map(e => e.msg), ['3', '4', '5']);
+    });
+
+    it('Запись в файл за день, со стеком у ошибок', async () => {
+        const dir = tmpDir();
+        const log = createLogger({ dir, now: fixedNow });
+        log.info('[SEARCH] Решение: ответ из базы');
+        log.error('[DB] Ошибка запроса:', new Error('duplicate key'));
+        await log.close();
+
+        const text = fs.readFileSync(path.join(dir, 'app-2026-09-15.log'), 'utf8');
+        assert.ok(text.includes('[2026-09-15 15:00:00] INFO  [SEARCH] Решение: ответ из базы'), text);
+        assert.ok(text.includes('ERROR [DB] Ошибка запроса: duplicate key'));
+        assert.ok(/\n\s+at /.test(text), 'в файле должен быть стек вызовов');
+    });
+
+    it('Файлы старше срока хранения удаляются, свежие остаются', async () => {
+        const dir = tmpDir();
+        fs.writeFileSync(path.join(dir, 'app-2026-08-01.log'), 'старый');
+        fs.writeFileSync(path.join(dir, 'app-2026-09-10.log'), 'свежий');
+        fs.writeFileSync(path.join(dir, 'notes.txt'), 'чужой файл');
+
+        const log = createLogger({ dir, now: fixedNow, retentionDays: 14 });
+        log.info('[APP] старт');
+        await log.close();
+
+        const files = fs.readdirSync(dir).sort();
+        assert.deepEqual(files, ['app-2026-09-10.log', 'app-2026-09-15.log', 'notes.txt']);
+        assert.deepEqual(log.files(), ['2026-09-15', '2026-09-10']);
+    });
+
+    it('Путь к файлу: только формат даты — выйти из папки логов нельзя', async () => {
+        const dir = tmpDir();
+        const log = createLogger({ dir, now: fixedNow });
+        log.info('[APP] старт');
+        await log.close();
+        assert.ok(log.filePath('2026-09-15'));
+        assert.equal(log.filePath('../../.env'), null);
+        assert.equal(log.filePath('2026-09-15/../../x'), null);
+        assert.equal(log.filePath('2020-01-01'), null); // файла нет
+    });
+});
+
+describe('database — распознавание обрыва связи', () => {
+    const { isConnectionError } = require('../database')._test;
+
+    it('Обрыв и отказ соединения — это ошибки связи', () => {
+        assert.ok(isConnectionError({ code: 'ECONNREFUSED', message: '' }));
+        assert.ok(isConnectionError({ code: '57P01', message: 'terminating connection due to administrator command' }));
+        assert.ok(isConnectionError({ code: '08006', message: 'connection failure' }));
+        assert.ok(isConnectionError({ message: 'Connection terminated unexpectedly' }));
+    });
+
+    it('Ошибки самого запроса — не ошибки связи', () => {
+        assert.ok(!isConnectionError({ code: '23505', message: 'duplicate key value' }));
+        assert.ok(!isConnectionError({ code: '42P01', message: 'relation "x" does not exist' }));
+    });
+});
+

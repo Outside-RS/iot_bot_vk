@@ -1,5 +1,6 @@
-require('dotenv').config();
-require('./logger');
+require('dotenv').config({ quiet: true });
+// Логгер ставится первым: перехватывает console.* во всём приложении
+require('./logger').install();
 const express = require('express');
 const session = require('express-session');
 const helmet = require('helmet');
@@ -126,7 +127,7 @@ async function startBots() {
         const groups = await db.query('SELECT * FROM vk_groups WHERE is_active = TRUE');
 
         if (groups.rows.length === 0) {
-            console.log('⚠️ Нет активных групп VK. Добавьте группы через админку: /groups');
+            console.warn('[BOT] Нет активных групп VK. Добавьте группы через админку: /groups');
             return;
         }
 
@@ -152,21 +153,24 @@ async function startBots() {
                 // Сохраняем в глобальный объект
                 global.bots[group.group_id] = botInstance;
 
-                console.log(`🚀 Бот запущен: ${group.group_name} (ID: ${group.group_id})`);
+                console.info(`[BOT] Бот запущен: ${group.group_name} (ID: ${group.group_id})`);
             } catch (e) {
-                console.error(`❌ Ошибка запуска группы ${group.group_name}:`, e.message);
+                console.error(`[BOT] Не удалось запустить группу ${group.group_name} (ID: ${group.group_id}):`, e);
             }
         }
 
-        console.log(`✅ Всего запущено ботов: ${Object.keys(global.bots).length}`);
+        console.info(`[BOT] Всего запущено ботов: ${Object.keys(global.bots).length}`);
     } catch (e) {
-        console.error('Ошибка загрузки групп:', e);
+        console.error('[BOT] Не удалось загрузить список групп из базы:', e);
     }
 }
 
 // 9. Главная функция запуска
 async function start() {
     try {
+        const logger = require('./logger').getLogger();
+        console.info(`[APP] Запуск. Уровень логов: ${process.env.LOG_LEVEL || 'debug'}, часовой пояс: ${process.env.LOG_TIMEZONE || 'Asia/Yekaterinburg'}, файлы логов хранятся ${process.env.LOG_RETENTION_DAYS || 14} дн.${logger ? '' : ' (логгер не установлен!)'}`);
+
         // Запускаем ботов для всех групп
         await startBots();
 
@@ -176,7 +180,7 @@ async function start() {
 
         // Запускаем веб-сервер
         app.listen(PORT, () => {
-            console.log(`🌍 Админка доступна: http://localhost:${PORT}`);
+            console.info(`[APP] Админка доступна: http://localhost:${PORT}`);
             
             // Запуск frpc-туннеля без Docker — ТОЛЬКО по явному флагу.
             // Раньше frpc.exe стартовал автоматически, если лежал в папке, и при
@@ -201,7 +205,7 @@ async function start() {
         });
 
     } catch (err) {
-        console.error('Ошибка при запуске:', err);
+        console.error('[APP] Ошибка при запуске:', err);
     }
 }
 

@@ -1,5 +1,5 @@
 // Скрипт для создания таблицы app_settings и переноса ключа GigaChat из .env
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const { Client } = require('pg');
 
 const c = new Client({

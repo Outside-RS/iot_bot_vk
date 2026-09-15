@@ -13,6 +13,22 @@ const loginLimiter = rateLimit({
     legacyHeaders: false,
 });
 
+// Журнал действий в админке: каждый изменяющий запрос с результатом и временем.
+// Одно место вместо логов в каждом маршруте. GET не пишем — страница логов
+// сама опрашивает сервер раз в секунду и заспамила бы журнал.
+router.use((req, res, next) => {
+    if (req.method === 'GET' || req.path === '/login') return next();
+    const started = Date.now();
+    res.on('finish', () => {
+        const who = req.session && req.session.isAdmin ? 'администратор' : 'без входа';
+        const line = `[ADMIN] ${req.method} ${req.originalUrl} → ${res.statusCode} за ${Date.now() - started} мс (${who}, IP ${req.ip})`;
+        if (res.statusCode >= 500) console.error(line);
+        else if (res.statusCode >= 400) console.warn(line);
+        else console.info(line);
+    });
+    next();
+});
+
 // Проверка авторизации
 function requireAuth(req, res, next) {
     if (req.session.isAdmin) {
@@ -560,7 +576,6 @@ router.post('/broadcast/send', requireAuth, async (req, res) => {
 
     (async () => {
         try {
-            console.log(`🚀 Рассылка через группу ${botGroupId}. Цель: ${target}`);
             let query = '';
             let params = [];
 
@@ -570,14 +585,23 @@ router.post('/broadcast/send', requireAuth, async (req, res) => {
                 query = "SELECT vk_id FROM users WHERE role = 'student'";
             } else if (target === 'tutors') {
                 query = "SELECT vk_id FROM users WHERE role = 'operator'";
-            } else if (target === 'group') {
+            } else if (target === 'group' && group_number && group_number.trim()) {
                 query = "SELECT vk_id FROM users WHERE group_number = $1";
                 params = [group_number.trim().toUpperCase()];
+            } else {
+                // Раньше неизвестная цель или пустой номер группы давали пустой
+                // SQL-запрос или TypeError — рассылка молча не происходила
+                console.warn(`[ADMIN] Рассылка не запущена: некорректная цель «${target}»${target === 'group' ? ' (не указан номер группы)' : ''}`);
+                return;
             }
 
             const users = await db.query(query, params);
-            let count = 0;
+            console.info(`[ADMIN] Рассылка запущена через группу ${botGroupId}: цель «${target}${params.length ? ' ' + params[0] : ''}», получателей ${users.rows.length}`);
 
+            // Раньше ошибки отправки глотались пустым catch — считаем и
+            // показываем причины, чтобы было понятно, почему не всем дошло
+            let delivered = 0;
+            const failures = {};
             for (const user of users.rows) {
                 try {
                     await bot.api.messages.send({
@@ -585,13 +609,21 @@ router.post('/broadcast/send', requireAuth, async (req, res) => {
                         message: `📢 РАССЫЛКА:\n\n${message}`,
                         random_id: 0
                     });
-                    count++;
-                    await new Promise(r => setTimeout(r, 50));
-                } catch (err) { }
+                    delivered++;
+                } catch (err) {
+                    const reason = err.code ? `код ${err.code}` : err.message;
+                    failures[reason] = (failures[reason] || 0) + 1;
+                    console.debug(`[VK] Рассылка: не доставлено ${user.vk_id}:`, err);
+                }
+                await new Promise(r => setTimeout(r, 50));
             }
-            console.log(`✅ Рассылка завершена. Доставлено: ${count}`);
+
+            const failed = users.rows.length - delivered;
+            const reasons = Object.entries(failures).map(([r, n]) => `${r} — ${n}`).join('; ');
+            const summary = `[ADMIN] Рассылка завершена: доставлено ${delivered} из ${users.rows.length}${failed ? `, не доставлено ${failed} (${reasons})` : ''}`;
+            if (failed) console.warn(summary); else console.info(summary);
         } catch (e) {
-            console.error('Ошибка рассылки:', e);
+            console.error('[ADMIN] Рассылка прервана ошибкой:', e);
         }
     })();
 
@@ -649,7 +681,7 @@ router.post('/groups/add', requireAuth, noCache, async (req, res) => {
             const botInstance = createBotInstance(access_token, group_id, group_name);
             await botInstance.updates.start();
             global.bots[group_id] = botInstance;
-            console.log(`🚀 Бот динамически запущен: ${group_name}`);
+            console.log(`[ADMIN] Бот динамически запущен: ${group_name}`);
         } catch (botErr) {
             startError = botErr.message;
             console.error(`[ADMIN] Не удалось запустить бота ${group_name}: ${botErr.message}`);
@@ -680,7 +712,7 @@ router.post('/groups/delete/:id', requireAuth, noCache, async (req, res) => {
             if (global.bots[groupId]) {
                 await global.bots[groupId].updates.stop();
                 delete global.bots[groupId];
-                console.log(`🛑 Бот остановлен: ${groupRes.rows[0].group_name}`);
+                console.log(`[ADMIN] Бот остановлен: ${groupRes.rows[0].group_name}`);
             }
         }
         await db.query('DELETE FROM vk_groups WHERE id = $1', [req.params.id]);
@@ -703,7 +735,7 @@ router.post('/groups/toggle/:id', requireAuth, noCache, async (req, res) => {
                 if (global.bots[group.group_id]) {
                     await global.bots[group.group_id].updates.stop();
                     delete global.bots[group.group_id];
-                    console.log(`⏸️ Бот отключен: ${group.group_name}`);
+                    console.log(`[ADMIN] Бот отключен: ${group.group_name}`);
                 }
             } else {
                 // Включаем — запускаем бота
@@ -711,9 +743,9 @@ router.post('/groups/toggle/:id', requireAuth, noCache, async (req, res) => {
                     const botInstance = createBotInstance(group.access_token, group.group_id, group.group_name);
                     await botInstance.updates.start();
                     global.bots[group.group_id] = botInstance;
-                    console.log(`▶️ Бот включен: ${group.group_name}`);
+                    console.log(`[ADMIN] Бот включен: ${group.group_name}`);
                 } catch (botErr) {
-                    console.error(`⚠️ Ошибка запуска: ${botErr.message}`);
+                    console.error(`[ADMIN] Ошибка запуска: ${botErr.message}`);
                 }
             }
         }
@@ -911,7 +943,7 @@ router.get('/feedback', requireAuth, noCache, async (req, res) => {
         `);
         res.render('feedback', { feedbackList: result.rows, currentRoute: '/feedback' });
     } catch (err) {
-        console.error(err);
+        console.error('[ADMIN] Ошибка в разделе отзывов:', err);
         res.status(500).send('Ошибка при загрузке отзывов.');
     }
 });
@@ -924,7 +956,7 @@ router.post('/feedback/status/:id', requireAuth, async (req, res) => {
         await db.query('UPDATE feedback SET status = $1 WHERE id = $2', [status, id]);
         res.redirect('/feedback');
     } catch (err) {
-        console.error(err);
+        console.error('[ADMIN] Ошибка в разделе отзывов:', err);
         res.status(500).send('Ошибка изменения статуса.');
     }
 });
@@ -936,18 +968,33 @@ router.post('/feedback/delete/:id', requireAuth, async (req, res) => {
         await db.query('DELETE FROM feedback WHERE id = $1', [id]);
         res.redirect('/feedback');
     } catch (err) {
-        console.error(err);
+        console.error('[ADMIN] Ошибка в разделе отзывов:', err);
         res.status(500).send('Ошибка удаления.');
     }
 });
 // ====== ЛОГИ (Терминал) ======
 
 router.get('/logs', requireAuth, noCache, (req, res) => {
-    res.render('logs', { currentRoute: '/logs' });
+    const logger = require('../logger').getLogger();
+    res.render('logs', { currentRoute: '/logs', logFiles: logger ? logger.files() : [] });
 });
 
+// Записи из памяти. ?since=<id> — только новее указанной: страница опрашивает
+// сервер раз в секунду и раньше каждый раз получала все 500 строк целиком.
 router.get('/api/logs', requireAuth, (req, res) => {
-    res.json(global.appLogs || []);
+    const logger = require('../logger').getLogger();
+    const since = Number.parseInt(req.query.since, 10) || 0;
+    res.json({ entries: logger ? logger.entries(since) : [] });
+});
+
+// Скачать файл лога за день — вся история, в том числе после перезапусков
+router.get('/logs/download/:day', requireAuth, (req, res) => {
+    const logger = require('../logger').getLogger();
+    // filePath сам проверяет формат ГГГГ-ММ-ДД — через параметр не выйти за папку логов
+    const file = logger && logger.filePath(req.params.day);
+    if (!file) return res.status(404).send('Лог за эту дату не найден.');
+    console.info(`[ADMIN] Скачан файл лога за ${req.params.day} (IP ${req.ip})`);
+    res.download(file, `bot-log-${req.params.day}.log`);
 });
 
 module.exports = router;

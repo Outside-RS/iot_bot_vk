@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const https = require('https');
 const { db } = require('./database');
 

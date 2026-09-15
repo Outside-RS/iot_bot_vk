@@ -1,5 +1,5 @@
-require('dotenv').config();
-const { db } = require('./database');
+require('dotenv').config({ quiet: true });
+const { db, reportConnectionLost, reportConnectionOk } = require('./database');
 const { askOllama, askGigaChat, getGigaChatChain } = require('./ai_service');
 const { buildKnownFacts, guardFacts } = require('./fact_guard');
 const { ensureAdminRoute } = require('./answer_policy');
@@ -68,10 +68,10 @@ async function generate(task) {
                 } catch (err) {
                     cloudError = err;
                     if (err.quotaExhausted) {
-                        console.log(`[Worker] Квота ${model.id} исчерпана, пробуем следующий класс модели`);
+                        console.warn(`[Worker] Квота ${model.id} исчерпана, пробуем следующий класс модели`);
                         continue;
                     }
-                    console.log(`[Worker] GigaChat (${model.id}) ошибка: ${err.message}`);
+                    console.warn(`[Worker] GigaChat (${model.id}) ошибка: ${err.message}`);
                     break; // обычный сбой — не перебираем модели, уходим в резерв
                 }
             }
@@ -84,7 +84,7 @@ async function generate(task) {
     if (!ollamaBusy) {
         ollamaBusy = true;
         try {
-            if (cloudError) console.log('[Worker] Переключаемся на резервную модель Ollama');
+            if (cloudError) console.warn('[Worker] Переключаемся на резервную модель Ollama');
             return await providers.askOllama(task.ai_context, task.faq_context);
         } catch (err) {
             throw cloudError || err;
@@ -122,7 +122,7 @@ async function verifyFacts(task, text) {
     const { text: guarded, removed } = guardFacts(text, known);
 
     if (removed.length > 0) {
-        console.log(`[FACTS] Задача ${task.id}: заменены контакты, которых нет в базе знаний: ${removed.join(', ')}`);
+        console.warn(`[FACTS] Задача ${task.id}: заменены контакты, которых нет в базе знаний: ${removed.join(', ')}`);
     }
     return guarded;
 }
@@ -135,7 +135,7 @@ async function requeue(taskId, reason) {
 
 /** Реальный сбой: списываем попытку и решаем — повторить или сдаться */
 async function handleFailure(task, err) {
-    console.log(`[Worker] Ошибка обработки задачи ${task.id}: ${err.message}`);
+    console.warn(`[Worker] Ошибка обработки задачи ${task.id}: ${err.message}`);
 
     let attempts;
     try {
@@ -221,7 +221,7 @@ async function processTask(task) {
         });
 
         console.log(`[Worker] Задача ${task.id} выполнена через ${result.provider}`);
-        console.log(`[AI_RESPONSE] Ответ: "${result.text.substring(0, 500)}${result.text.length > 500 ? '...' : ''}"`);
+        console.info(`[AI] Ответ студенту ${task.vk_id}: "${result.text.substring(0, 500)}${result.text.length > 500 ? '...' : ''}"`);
     } catch (err) {
         await handleFailure(task, err);
     }
@@ -238,8 +238,10 @@ async function processQueue() {
     let client;
     try {
         client = await db.connect();
+        reportConnectionOk();
     } catch (err) {
-        console.error('[Worker] Нет соединения с БД, пропускаем тик:', err.message);
+        // Одна запись на весь эпизод недоступности, а не каждые три секунды
+        reportConnectionLost(err);
         return;
     }
 

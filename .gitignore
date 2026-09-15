@@ -12,3 +12,5 @@ frpc.toml
 *.pid
 *.seed
 *.pid.lock
+# Логи бота: содержат сообщения студентов
+vk-bot-search/logs/

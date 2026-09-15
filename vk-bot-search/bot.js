@@ -4,8 +4,63 @@ const { db } = require('./database');
 const { getQueueStats } = require('./ai_worker');
 const { searchFaq, buildDialogHints, DIRECT_MIN_SCORE } = require('./faq_search');
 
-// Логи
-const log = (msg) => console.log(`[Bot] ${msg}`);
+// ==================== Логи ====================
+// Теги: [BOT] — события диалога, [FSM] — состояние пользователя, [SEARCH] — поиск,
+// [QUEUE] — очередь ИИ, [TICKET] — обращения к администраторам, [VK] — связь с VK,
+// [SECURITY] — подозрительные действия. Уровни и файлы — см. logger.js.
+const log = (msg) => console.info(`[BOT] ${msg}`);
+
+/** Текст в одну строку ограниченной длины — чтобы запись лога оставалась читаемой */
+const preview = (text, max = 200) => {
+    const t = String(text || '').replace(/\s+/g, ' ').trim();
+    return t.length > max ? `${t.slice(0, max)}…` : t;
+};
+
+/** Что прислал пользователь: текст, нажатая кнопка, вложения */
+function describeIncoming(context) {
+    const parts = [];
+    if (context.text) parts.push(`«${preview(context.text)}»`);
+    if (context.messagePayload && context.messagePayload.command) parts.push(`[кнопка ${context.messagePayload.command}]`);
+    const atts = context.attachments || [];
+    if (atts.length > 0) {
+        const byType = {};
+        for (const a of atts) byType[a.type] = (byType[a.type] || 0) + 1;
+        parts.push(`[вложения: ${Object.entries(byType).map(([t, n]) => `${t}×${n}`).join(', ')}]`);
+    }
+    return parts.join(' ') || '(пусто)';
+}
+
+/**
+ * Логирует каждый ответ бота в диалоге. В bot.js десятки вызовов context.send —
+ * вместо логов в каждом из них оборачиваем сам метод один раз на сообщение.
+ */
+function instrumentSend(context) {
+    const send = context.send.bind(context);
+    context.send = async (params, ...rest) => {
+        const text = typeof params === 'string' ? params : (params && params.message) || '';
+        try {
+            const result = await send(params, ...rest);
+            console.debug(`[VK] → ${context.senderId}: ${preview(text, 150)}`);
+            return result;
+        } catch (err) {
+            console.error(`[VK] Не удалось ответить пользователю ${context.senderId}:`, err);
+            throw err;
+        }
+    };
+}
+
+/** Отправка через API (уведомления другим людям) с логом результата, без падения */
+async function notify(vk, peerId, params, what) {
+    try {
+        await vk.api.messages.send({ peer_id: peerId, random_id: 0, ...params });
+        console.debug(`[VK] → ${peerId}: ${what}`);
+        return true;
+    } catch (err) {
+        // Частая причина — пользователь запретил сообщения от сообщества (код 901)
+        console.warn(`[VK] Не доставлено ${peerId} (${what}):`, err);
+        return false;
+    }
+}
 
 const REGEX_FIO = /^[А-Яа-яЁё]+\s+[А-Яа-яЁё]+.*$/;
 const REGEX_GROUP = /^[А-Я]{2,}-\d{6}$/;
@@ -67,6 +122,7 @@ function createBotInstance(token, groupId, groupName) {
     // Регистрируем обработчик сообщений для этого экземпляра
     vk.updates.on('message_new', async (context) => {
         if (context.isOutbox) return;
+        instrumentSend(context);
         await handleMessage(context, vk, groupId);
     });
 
@@ -80,7 +136,10 @@ async function handleMessage(context, vk, groupId) {
 
     if (!text && !messagePayload && attachments.length === 0) return;
 
+    console.info(`[BOT] ← ${senderId} (группа ${groupId}): ${describeIncoming(context)}`);
+
     if (text && text.length > 1000) {
+        console.info(`[BOT] Сообщение от ${senderId} отклонено: ${text.length} символов при лимите 1000`);
         return context.send('❌ Сообщение слишком длинное. Максимум — 1000 символов.');
     }
 
@@ -89,6 +148,7 @@ async function handleMessage(context, vk, groupId) {
         if (messagePayload) {
             if (messagePayload.command === 'logout') {
                 await db.query('DELETE FROM users WHERE vk_id = $1', [senderId]);
+                console.info(`[BOT] ${senderId} вышел из аккаунта (профиль удалён)`);
                 return context.send({ message: 'Вы вышли. Напишите любое сообщение для начала работы.', keyboard: Keyboard.keyboard([]) });
             }
             if (messagePayload.command === 'show_faq_answer') {
@@ -96,6 +156,7 @@ async function handleMessage(context, vk, groupId) {
                 const faqRes = await db.query('SELECT question, answer FROM faq WHERE id = $1', [faqId]);
                 if (faqRes.rows.length > 0) {
                     const row = faqRes.rows[0];
+                    console.info(`[SEARCH] ${senderId} выбрал вариант FAQ #${faqId}: «${preview(row.question, 80)}»`);
                     await context.send({
                         message: `📚 ${row.question}\n\n${row.answer}`,
                         keyboard: Keyboard.builder().textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send', question: row.question }, color: Keyboard.POSITIVE_COLOR }).row().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).oneTime()
@@ -116,7 +177,8 @@ async function handleMessage(context, vk, groupId) {
                 if (ticketRes.rows[0].status !== 'open') return context.send('Тикет уже занят.');
                 await db.query("UPDATE tickets SET operator_vk_id = $1, status = 'active' WHERE id = $2", [senderId, ticketId]);
                 await db.query("UPDATE users SET current_chat_ticket_id = $1, state = 'chat_mode' WHERE vk_id = $2", [ticketId, senderId]);
-                await vk.api.messages.send({ peer_id: ticketRes.rows[0].student_vk_id, message: `👨‍💻 Администратор подключился к вопросу #${ticketId}.`, random_id: 0, keyboard: Keyboard.builder().textButton({ label: `Перейти к #${ticketId}`, payload: { command: 'open_chat', ticket_id: ticketId }, color: Keyboard.POSITIVE_COLOR }).inline() });
+                console.info(`[TICKET] Тикет #${ticketId} взят администратором ${senderId}`);
+                await notify(vk, ticketRes.rows[0].student_vk_id, { message: `👨‍💻 Администратор подключился к вопросу #${ticketId}.`, keyboard: Keyboard.builder().textButton({ label: `Перейти к #${ticketId}`, payload: { command: 'open_chat', ticket_id: ticketId }, color: Keyboard.POSITIVE_COLOR }).inline() }, `уведомление: администратор взял тикет #${ticketId}`);
                 await context.send({ message: `Вы взяли тикет #${ticketId}.`, keyboard: Keyboard.builder().textButton({ label: '🏁 Завершить этот тикет', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '⬅️ Назад к списку', color: Keyboard.SECONDARY_COLOR }) });
                 return;
             }
@@ -130,6 +192,7 @@ async function handleMessage(context, vk, groupId) {
                     return context.send('Тикет не найден или недоступен.');
                 }
                 await db.query("UPDATE users SET current_chat_ticket_id = $1, state = 'chat_mode' WHERE vk_id = $2", [ticketId, senderId]);
+                console.info(`[TICKET] ${senderId} открыл чат тикета #${ticketId}`);
                 const userRes = await db.query('SELECT role FROM users WHERE vk_id = $1', [senderId]);
                 const kb = userRes.rows[0].role === 'operator' ? Keyboard.builder().textButton({ label: '🏁 Завершить этот тикет', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '⬅️ Назад к списку', color: Keyboard.SECONDARY_COLOR }) : Keyboard.builder().textButton({ label: '🏁 Завершить вопрос', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '⬅️ В меню', color: Keyboard.SECONDARY_COLOR });
                 await context.send({ message: `🟢 Чат #${ticketId} активен.`, keyboard: kb });
@@ -174,20 +237,30 @@ async function handleMessage(context, vk, groupId) {
                 await db.query("UPDATE users SET state = 'main_menu', pending_attachments = NULL WHERE vk_id = $1", [senderId]);
 
                 const newT = await db.query("INSERT INTO tickets (student_vk_id, question) VALUES ($1, $2) RETURNING id", [senderId, qText]);
+                const ticketId = newT.rows[0].id;
+                console.info(`[TICKET] Создан тикет #${ticketId} от ${senderId} (${messagePayload.command === 'operator_request' ? 'из диалога с ИИ' : 'из поиска'}): «${preview(qText, 120)}»${pendingAtts.length ? `, фото: ${pendingAtts.length}` : ''}`);
                 await context.send({ message: `✅ Вопрос отправлен администратору.`, keyboard: Keyboard.builder().textButton({ label: '🗂 Мои обращения', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR }).oneTime() });
                 const ops = await db.query(`SELECT vk_id FROM users WHERE role = 'operator'`);
                 const attStr = pendingAtts.join(',');
                 const photoNote = pendingAtts.length > 0 ? `\n📎 Прикреплено фото: ${pendingAtts.length} шт.` : '';
+
+                // Раньше ошибки отправки глотались пустым catch: если ни один
+                // администратор не получил уведомление, об этом никто не узнавал
+                let delivered = 0;
                 for (let op of ops.rows) {
-                    try {
-                        await vk.api.messages.send({
-                            peer_id: op.vk_id,
-                            message: `🆘 Новый вопрос #${newT.rows[0].id} от ${user.full_name}:\n"${qText}"${photoNote}`,
-                            attachment: attStr || undefined,
-                            random_id: 0,
-                            keyboard: Keyboard.builder().textButton({ label: `Взять #${newT.rows[0].id}`, payload: { command: 'take_ticket', ticket_id: newT.rows[0].id }, color: Keyboard.POSITIVE_COLOR }).inline()
-                        });
-                    } catch (e) { }
+                    const ok = await notify(vk, op.vk_id, {
+                        message: `🆘 Новый вопрос #${ticketId} от ${user.full_name}:\n"${qText}"${photoNote}`,
+                        attachment: attStr || undefined,
+                        keyboard: Keyboard.builder().textButton({ label: `Взять #${ticketId}`, payload: { command: 'take_ticket', ticket_id: ticketId }, color: Keyboard.POSITIVE_COLOR }).inline()
+                    }, `уведомление о тикете #${ticketId}`);
+                    if (ok) delivered++;
+                }
+                if (ops.rows.length === 0) {
+                    console.warn(`[TICKET] Тикет #${ticketId}: в системе нет ни одного администратора — уведомлять некого`);
+                } else if (delivered === 0) {
+                    console.error(`[TICKET] Тикет #${ticketId}: уведомление не доставлено НИ ОДНОМУ из ${ops.rows.length} администраторов`);
+                } else {
+                    console.info(`[TICKET] Тикет #${ticketId}: администраторов уведомлено ${delivered} из ${ops.rows.length}`);
                 }
                 return;
             }
@@ -197,6 +270,7 @@ async function handleMessage(context, vk, groupId) {
                 if (!localUser) return;
 
                 const qText = messagePayload.question || text || "Вопрос для ИИ";
+                console.info(`[BOT] ${senderId} нажал «Спросить ИИ» для вопроса «${preview(qText, 120)}»`);
                 try {
                     const faqHints = await buildDialogHints(qText, await searchFaq(qText, 8), localUser.ai_context);
                     await enqueueAiTask(context, localUser, qText, faqHints, groupId);
@@ -213,6 +287,7 @@ async function handleMessage(context, vk, groupId) {
         let user = userRes.rows[0];
         if (!user) {
             await db.query('INSERT INTO users (vk_id, state) VALUES ($1, $2)', [senderId, 'registration_start']);
+            console.info(`[BOT] Новый пользователь ${senderId} (группа ${groupId}) — начата регистрация`);
             await context.send({ message: 'Добро пожаловать! Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', payload: { command: 'student' }, color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', payload: { command: 'operator' }, color: Keyboard.POSITIVE_COLOR }).oneTime() });
             return;
         }
@@ -220,12 +295,20 @@ async function handleMessage(context, vk, groupId) {
         // 3. МАШИНА СОСТОЯНИЙ
         await processState(context, user, vk, groupId);
 
-    } catch (err) { console.error(err); }
+    } catch (err) {
+        // Раньше здесь был console.error(err) — в логе оставался огромный дамп
+        // объекта или «{}». Теперь: кто, что прислал, текст ошибки; стек — в файле лога.
+        console.error(`[BOT] Ошибка обработки сообщения от ${senderId} (${describeIncoming(context)}):`, err);
+    }
 }
 
 // Обработка состояний
 async function processState(context, user, vk, groupId) {
     const { text, senderId, attachments, messagePayload } = context;
+
+    // Состояние, в котором обрабатывается сообщение. По последовательности
+    // этих строк в логе видно, как пользователь двигался по диалогу.
+    console.debug(`[FSM] ${senderId} (${user.role || 'без роли'}): состояние «${user.state}»`);
 
     switch (user.state) {
         case 'chat_mode':
@@ -235,8 +318,9 @@ async function processState(context, user, vk, groupId) {
                 await db.query("UPDATE tickets SET status = 'closed' WHERE id = $1", [user.current_chat_ticket_id]);
                 const t = (await db.query('SELECT * FROM tickets WHERE id = $1', [user.current_chat_ticket_id])).rows[0];
                 const targetId = (user.role === 'operator') ? t.student_vk_id : t.operator_vk_id;
+                console.info(`[TICKET] Тикет #${t.id} закрыт ${user.role === 'operator' ? 'администратором' : 'студентом'} ${senderId}`);
                 if (targetId) {
-                    await vk.api.messages.send({ peer_id: targetId, message: `🏁 Тикет #${t.id} завершен.`, random_id: 0 });
+                    await notify(vk, targetId, { message: `🏁 Тикет #${t.id} завершен.` }, `уведомление о закрытии тикета #${t.id}`);
                     await db.query("UPDATE users SET current_chat_ticket_id = NULL, state = 'main_menu' WHERE vk_id = $1 AND current_chat_ticket_id = $2", [targetId, t.id]);
                 }
                 await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]);
@@ -251,14 +335,24 @@ async function processState(context, user, vk, groupId) {
                 await db.query(`INSERT INTO messages (ticket_id, sender_vk_id, text, attachments, is_read) VALUES ($1, $2, $3, $4, FALSE)`, [user.current_chat_ticket_id, senderId, text || '', atts]);
                 const recUser = (await db.query('SELECT current_chat_ticket_id FROM users WHERE vk_id = $1', [recId])).rows[0];
                 if (recUser && recUser.current_chat_ticket_id === activeT.id) {
-                    try { await vk.api.messages.send({ peer_id: recId, message: text || '', attachment: atts.join(','), random_id: 0 }); await db.query(`UPDATE messages SET is_read = TRUE WHERE ticket_id = $1 AND sender_vk_id = $2`, [activeT.id, senderId]); } catch (e) { }
+                    // Собеседник сейчас в этом чате — пересылаем сразу. Прочитанным
+                    // сообщение отмечаем, только если пересылка удалась: раньше ошибка
+                    // глоталась, и сообщение молча терялось.
+                    const ok = await notify(vk, recId, { message: text || '', attachment: atts.join(',') }, `пересылка в чате тикета #${activeT.id}`);
+                    if (ok) {
+                        await db.query(`UPDATE messages SET is_read = TRUE WHERE ticket_id = $1 AND sender_vk_id = $2`, [activeT.id, senderId]);
+                        console.debug(`[TICKET] #${activeT.id}: сообщение ${senderId} → ${recId} доставлено${atts.length ? `, вложений: ${atts.length}` : ''}`);
+                    }
                 } else {
                     const unread = parseInt((await db.query(`SELECT COUNT(*) FROM messages WHERE ticket_id = $1 AND sender_vk_id = $2 AND is_read = FALSE`, [activeT.id, senderId])).rows[0].count);
+                    console.debug(`[TICKET] #${activeT.id}: ${recId} не в чате, сообщение сохранено (непрочитанных: ${unread})`);
                     if (unread === 1) {
                         const info = (user.role === 'student') ? `👤 ${user.full_name}` : '👨‍💻 Администратор';
-                        try { await vk.api.messages.send({ peer_id: recId, message: `🔔 Новое от ${info} (#${activeT.id})`, random_id: 0, keyboard: Keyboard.builder().textButton({ label: `Подключиться к #${activeT.id}`, payload: { command: 'open_chat', ticket_id: activeT.id }, color: Keyboard.POSITIVE_COLOR }).inline() }); } catch (e) { }
+                        await notify(vk, recId, { message: `🔔 Новое от ${info} (#${activeT.id})`, keyboard: Keyboard.builder().textButton({ label: `Подключиться к #${activeT.id}`, payload: { command: 'open_chat', ticket_id: activeT.id }, color: Keyboard.POSITIVE_COLOR }).inline() }, `оповещение о новом сообщении в тикете #${activeT.id}`);
                     }
                 }
+            } else {
+                console.warn(`[TICKET] #${activeT.id}: сообщение от ${senderId} некому доставить — у тикета нет второй стороны`);
             }
             break;
 
@@ -266,7 +360,8 @@ async function processState(context, user, vk, groupId) {
             // 0. Навигация
             if (text === '🏠 В меню' || text === '🔙 Назад' || ['✉️ Задать вопрос', '👤 Профиль', '🗂 Мои обращения'].includes(text) || text === '🏠 В меню (отменить)') {
                 if (text === '🏠 В меню (отменить)') {
-                    await db.query("DELETE FROM ai_queue WHERE vk_id = $1 AND status IN ('pending', 'processing')", [senderId]);
+                    const cancelled = await db.query("DELETE FROM ai_queue WHERE vk_id = $1 AND status IN ('pending', 'processing') RETURNING id", [senderId]);
+                    console.info(`[QUEUE] ${senderId} отменил вопрос к ИИ (снято задач: ${cancelled.rowCount})`);
                 }
                 await db.query("UPDATE users SET state = 'main_menu', pending_attachments = NULL WHERE vk_id = $1", [senderId]);
                 return mainMenu(context, user);
@@ -277,6 +372,7 @@ async function processState(context, user, vk, groupId) {
             if (photoAtts.length > 0) {
                 const attStrings = resolveAttachments(photoAtts);
                 await db.query('UPDATE users SET pending_attachments = $1 WHERE vk_id = $2', [JSON.stringify(attStrings), senderId]);
+                console.info(`[BOT] ${senderId}: сохранено фото для будущего обращения — ${photoAtts.length} шт.${text ? '' : ' (без текста, ждём вопрос)'}`);
 
                 // Если фото без текста — предупреждаем и ждём текстовый вопрос
                 if (!text) {
@@ -294,7 +390,6 @@ async function processState(context, user, vk, groupId) {
             }
 
             const safeText = text || '';
-            console.log(`[SEARCH] Запрос от ${senderId} (${safeText.length} символов): "${safeText}"`);
 
             // 1. ЕДИНЫЙ ПОИСК (лексика + нечёткий) — см. faq_search.js
             // Сам запрос и вклад лексики/триграмм пишет searchFaq (уровень DEBUG)
@@ -305,8 +400,6 @@ async function processState(context, user, vk, groupId) {
                 const hits = rows.filter(r => r.score > DIRECT_MIN_SCORE);
 
                 if (hits.length > 0) {
-                    console.log(`[SEARCH] Found ${hits.length} results. Top: "${hits[0].question}" (${hits[0].score})`);
-
                     const best = hits[0];
 
                     // Если один явный лидер (или всего один результат) -> Показываем сразу ответ
@@ -314,7 +407,8 @@ async function processState(context, user, vk, groupId) {
                     const isLeader = hits.length === 1 || (hits[1] && best.score > hits[1].score * 1.5);
 
                     if (isLeader) {
-                        console.log(`[FAQ] Выдан ответ: "${best.question}"`);
+                        const why = hits.length === 1 ? 'единственное уверенное совпадение' : `в ${(best.score / hits[1].score).toFixed(1)} раза выше второго`;
+                        console.info(`[SEARCH] Решение для ${senderId}: ответ из базы — FAQ #${best.id} «${preview(best.question, 80)}», score ${best.score.toFixed(3)} (${why})`);
                         await context.send({
                             message: `📚 ${best.question}\n\n${best.answer}`,
                             keyboard: Keyboard.builder()
@@ -328,9 +422,13 @@ async function processState(context, user, vk, groupId) {
                         return;
                     }
 
-                    // Иначе предлагаем варианты (до 5 кнопок)
+                    // Иначе предлагаем варианты (до 5 кнопок). Раньше срез забыли, и при
+                    // 8 совпадениях вместе с тремя служебными кнопками клавиатура могла
+                    // превысить лимит строк VK — сообщение не отправлялось вовсе.
+                    const options = hits.slice(0, 5);
+                    console.info(`[SEARCH] Решение для ${senderId}: явного лидера нет — предложено вариантов ${options.length}: ${options.map(r => `#${r.id} (${r.score.toFixed(3)})`).join(', ')}`);
                     let kb = Keyboard.builder();
-                    hits.forEach((r, i) => {
+                    options.forEach((r, i) => {
                         kb.textButton({
                             label: `${i + 1}. ${r.question.substring(0, 30).replace(/\n/g, ' ')}...`,
                             payload: { command: 'show_faq_answer', faq_id: r.id },
@@ -360,7 +458,7 @@ async function processState(context, user, vk, groupId) {
                 console.info(`[SEARCH] Решение для ${senderId}: уверенного ответа в базе нет (лучший score ${rows[0] ? rows[0].score.toFixed(3) : '—'}) → вопрос уходит ИИ, ${hintCount > 0 ? `подсказок из базы: ${hintCount}` : 'без контекста — все совпадения ниже порога'}`);
                 await enqueueAiTask(context, user, text, faqHints, groupId);
             } catch (err) {
-                console.error('[SEARCH] Error:', err);
+                console.error(`[SEARCH] Ошибка поиска для ${senderId}, вопрос уходит ИИ без контекста:`, err);
                 await enqueueAiTask(context, user, text, '', groupId);
             }
             break;
@@ -377,6 +475,7 @@ async function processState(context, user, vk, groupId) {
             // Защита от спама: если есть pending или processing задача
             const inQueueRes = await db.query("SELECT id FROM ai_queue WHERE vk_id = $1 AND status IN ('pending', 'processing')", [senderId]);
             if (inQueueRes.rows.length > 0) {
+                console.info(`[QUEUE] ${senderId}: сообщение во время ожидания ответа ИИ — попросили дождаться (задача ${inQueueRes.rows[0].id})`);
                 return context.send({ message: '⏳ Пожалуйста, дождитесь ответа на ваш предыдущий вопрос.', keyboard: Keyboard.builder().textButton({ label: '🏠 В меню (отменить)', color: Keyboard.SECONDARY_COLOR }).oneTime() });
             }
 
@@ -438,8 +537,12 @@ async function processState(context, user, vk, groupId) {
                 await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
                 return mainMenu(context, user);
             }
+            // Фото без подписи: text пустой, и text.length раньше падал с TypeError —
+            // студент не получал ответа вовсе
+            if (!text) return context.send('Пожалуйста, напишите отзыв текстом — фотографии в отзывах пока не принимаются.');
             if (text.length > 2000) return context.send('Текст слишком длинный.');
             await db.query("INSERT INTO feedback (vk_id, text) VALUES ($1, $2)", [senderId, text]);
+            console.info(`[BOT] ${senderId} оставил отзыв: «${preview(text, 150)}»`);
             await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]);
             await context.send('✅ Спасибо за обратную связь! Разработчик ознакомится с вашим сообщением.');
             await mainMenu(context, user);
@@ -447,17 +550,17 @@ async function processState(context, user, vk, groupId) {
 
         case 'registration_start': if (text === 'Я Студент') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } else if (text === 'Я Администратор') { await db.query("UPDATE users SET state = 'reg_operator_code' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите код:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
         case 'reg_student_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'registration_start' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', color: Keyboard.POSITIVE_COLOR }).oneTime() }); } if (text.length > 100) return context.send('ФИО слишком длинное.'); if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1, state = 'reg_student_group' WHERE vk_id = $2", [text, senderId]); await context.send({ message: 'Группа:(РИ-XXXXXX)', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); break;
-        case 'reg_student_group': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Введите ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } const g = text.toUpperCase(); if (g.length > 20) return context.send('Ошибка группы'); if (!REGEX_GROUP.test(g)) return context.send('Ошибка группы'); await db.query("UPDATE users SET group_number = $1, study_years = 4, role = 'student', state = 'main_menu' WHERE vk_id = $2", [g, senderId]); await context.send('✅ Регистрация успешно завершена!'); await mainMenu(context, { ...user, role: 'student' }); break;
-        case 'reg_operator_code': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'registration_start' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', color: Keyboard.POSITIVE_COLOR }).oneTime() }); } const cRes = await db.query('SELECT * FROM operator_codes WHERE code = $1', [text]); if (cRes.rows.length > 0) { await db.query("UPDATE users SET role = 'operator', full_name = $1, linked_code = $2, state = 'main_menu' WHERE vk_id = $3", [cRes.rows[0].admin_name, text, senderId]); await context.send('Успех!'); await mainMenu(context, { ...user, role: 'operator' }); } else { await context.send({ message: 'Неверный код', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
+        case 'reg_student_group': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Введите ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } const g = text.toUpperCase(); if (g.length > 20) return context.send('Ошибка группы'); if (!REGEX_GROUP.test(g)) return context.send('Ошибка группы'); await db.query("UPDATE users SET group_number = $1, study_years = 4, role = 'student', state = 'main_menu' WHERE vk_id = $2", [g, senderId]); console.info(`[BOT] ${senderId}: регистрация студента завершена (группа ${g})`); await context.send('✅ Регистрация успешно завершена!'); await mainMenu(context, { ...user, role: 'student' }); break;
+        case 'reg_operator_code': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'registration_start' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', color: Keyboard.POSITIVE_COLOR }).oneTime() }); } const cRes = await db.query('SELECT * FROM operator_codes WHERE code = $1', [text]); if (cRes.rows.length > 0) { await db.query("UPDATE users SET role = 'operator', full_name = $1, linked_code = $2, state = 'main_menu' WHERE vk_id = $3", [cRes.rows[0].admin_name, text, senderId]); console.info(`[SECURITY] ${senderId} вошёл как администратор (${cRes.rows[0].admin_name})`); await context.send('Успех!'); await mainMenu(context, { ...user, role: 'operator' }); } else { console.warn(`[SECURITY] ${senderId}: неверный код администратора — попытка входа`); await context.send({ message: 'Неверный код', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
         case 'profile_view': if (text === '✏️ Редактировать') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); const editKb = Keyboard.builder().textButton({ label: 'ФИО', color: Keyboard.PRIMARY_COLOR }); if (user.role === 'student') { editKb.textButton({ label: 'Группу', color: Keyboard.PRIMARY_COLOR }); } editKb.row().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }); await context.send({ message: 'Что изменить?', keyboard: editKb.oneTime() }); } else if (text === '❌ Удалить профиль') { await db.query("UPDATE users SET state = 'profile_delete_confirm' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Удалить?', keyboard: Keyboard.builder().textButton({ label: 'Да', color: Keyboard.NEGATIVE_COLOR }).textButton({ label: 'Нет', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } else { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); } break;
         case 'profile_edit_select': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); return; } if (text === 'ФИО') { const s = user.role === 'operator' ? 'edit_tutor_fio' : 'edit_student_fio'; await db.query("UPDATE users SET state = $1 WHERE vk_id = $2", [s, senderId]); await context.send({ message: 'Новое ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } else if (text === 'Группу' && user.role === 'student') { await db.query("UPDATE users SET state = 'edit_student_group' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Новая группа:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
         case 'edit_student_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1, state = 'main_menu' WHERE vk_id = $2", [text, senderId]); await context.send('Обновлено!'); await mainMenu(context, user); break;
         case 'edit_student_group': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } const g2 = text.toUpperCase(); if (!REGEX_GROUP.test(g2)) return context.send('Ошибка'); await db.query("UPDATE users SET group_number = $1, state = 'main_menu' WHERE vk_id = $2", [g2, senderId]); await context.send('Обновлено!'); await mainMenu(context, user); break;
         case 'edit_tutor_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1 WHERE vk_id = $2", [text, senderId]); await db.query("UPDATE operator_codes SET admin_name = $1 WHERE code = $2", [text, user.linked_code]); await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await context.send('Обновлено!'); await mainMenu(context, user); break;
 
-        case 'profile_delete_confirm': if (text === 'Да') { await db.query('DELETE FROM users WHERE vk_id = $1', [senderId]); await context.send({ message: 'Профиль удален!' }); } else { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); } break;
-        case 'ticket_manage_menu': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); return mainMenu(context, user); } if (text === '❌ Удалить заявку') { await db.query("DELETE FROM tickets WHERE id = $1 AND student_vk_id = $2", [user.current_chat_ticket_id, senderId]); await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); await context.send('Удалено.'); return mainMenu(context, user); } if (text === '✏️ Изменить текст') { await db.query("UPDATE users SET state = 'ticket_edit_text' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Новый текст:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
-        case 'ticket_edit_text': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'ticket_manage_menu' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Меню:', keyboard: Keyboard.builder().textButton({ label: '✏️', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '❌', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '🔙', color: Keyboard.SECONDARY_COLOR }) }); } await db.query("UPDATE tickets SET question = $1 WHERE id = $2 AND student_vk_id = $3", [text, user.current_chat_ticket_id, senderId]); await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); await context.send('Обновлено!'); return mainMenu(context, user); break;
+        case 'profile_delete_confirm': if (text === 'Да') { await db.query('DELETE FROM users WHERE vk_id = $1', [senderId]); console.info(`[BOT] ${senderId} удалил свой профиль`); await context.send({ message: 'Профиль удален!' }); } else { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); } break;
+        case 'ticket_manage_menu': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); return mainMenu(context, user); } if (text === '❌ Удалить заявку') { await db.query("DELETE FROM tickets WHERE id = $1 AND student_vk_id = $2", [user.current_chat_ticket_id, senderId]); console.info(`[TICKET] ${senderId} удалил свою заявку #${user.current_chat_ticket_id}`); await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); await context.send('Удалено.'); return mainMenu(context, user); } if (text === '✏️ Изменить текст') { await db.query("UPDATE users SET state = 'ticket_edit_text' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Новый текст:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
+        case 'ticket_edit_text': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'ticket_manage_menu' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Меню:', keyboard: Keyboard.builder().textButton({ label: '✏️', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '❌', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '🔙', color: Keyboard.SECONDARY_COLOR }) }); } await db.query("UPDATE tickets SET question = $1 WHERE id = $2 AND student_vk_id = $3", [text, user.current_chat_ticket_id, senderId]); console.info(`[TICKET] ${senderId} изменил текст заявки #${user.current_chat_ticket_id}`); await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); await context.send('Обновлено!'); return mainMenu(context, user); break;
     }
 }
 
@@ -504,6 +607,7 @@ async function enqueueAiTask(context, user, question, faqContextText, groupId) {
         const pendingCount = parseInt(countRes.rows[0].count);
 
         if (pendingCount >= 50) {
+            console.warn(`[QUEUE] Circuit Breaker: в очереди ${pendingCount} задач — вопрос ${senderId} не принят, предложено передать администратору`);
             await context.send({
                 message: '⚠️ Сейчас ИИ-ассистент испытывает экстремальную нагрузку. Пожалуйста, передайте вопрос администраторам.',
                 keyboard: Keyboard.builder()
@@ -539,13 +643,14 @@ async function enqueueAiTask(context, user, question, faqContextText, groupId) {
 
         await db.query("UPDATE users SET state = 'ai_dialogue_mode', ai_context = $1, vk_group_id = $2 WHERE vk_id = $3", [JSON.stringify(aiCtx), groupId, senderId]);
 
-        await db.query(
-            "INSERT INTO ai_queue (vk_id, vk_group_id, ai_context, faq_context) VALUES ($1, $2, $3, $4)",
+        const queued = await db.query(
+            "INSERT INTO ai_queue (vk_id, vk_group_id, ai_context, faq_context) VALUES ($1, $2, $3, $4) RETURNING id",
             [senderId, groupId, JSON.stringify(aiCtx), faqContextText || '']
         );
+        console.info(`[QUEUE] Задача ${queued.rows[0].id} от ${senderId} поставлена в очередь (перед ней: ${pendingCount}, история диалога: ${aiCtx.length} сообщ., контекст из базы: ${faqContextText ? 'есть' : 'нет'})`);
 
     } catch (err) {
-        console.error('Error enqueueing AI task:', err);
+        console.error(`[QUEUE] Не удалось поставить вопрос ${senderId} в очередь ИИ:`, err);
     }
 }
 
@@ -553,3 +658,5 @@ async function enqueueAiTask(context, user, question, faqContextText, groupId) {
 module.exports = createBotInstance;
 module.exports.isGroupAllowed = isGroupAllowed;
 module.exports.getAllowedGroupIds = getAllowedGroupIds;
+// Для тестов: обработчик сообщений без подключения к VK
+module.exports._test = { handleMessage, instrumentSend };

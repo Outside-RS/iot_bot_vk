@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const { Client } = require('pg');
 const fs = require('fs');
 const path = require('path');
@@ -69,6 +69,8 @@ async function runMigration() {
                 vk_group_id BIGINT,
                 is_graduated BOOLEAN DEFAULT FALSE,
                 ai_context JSONB DEFAULT '[]',
+                -- фото, присланные до вопроса: прикладываются к обращению администратору
+                pending_attachments JSONB,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 

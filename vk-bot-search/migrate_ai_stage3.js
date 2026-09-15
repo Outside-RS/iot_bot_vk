@@ -1,7 +1,7 @@
 // Обновление существующей базы для Этапа 3 (очередь ИИ и учёт токенов GigaChat).
 // Скрипт идемпотентный — можно запускать повторно, данные не удаляются.
 //   node migrate_ai_stage3.js
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 const { Client } = require('pg');
 const { GIGACHAT_MODELS } = require('./ai_models');
 
@@ -20,6 +20,11 @@ const c = new Client({
     // created_at — времени постановки в очередь, из-за чего задача, пролежавшая
     // в очереди дольше 10 минут, сбрасывалась сразу после взятия и обрабатывалась дважды.
     await c.query('ALTER TABLE ai_queue ADD COLUMN IF NOT EXISTS started_at TIMESTAMP');
+
+    // Фото, присланные до вопроса (появились 14.06.2026 с обработкой фото).
+    // Код использует колонку, но ни один скрипт её не создавал: на базах, где её
+    // не добавили вручную, кнопка «Передать администратору» падала с ошибкой 42703.
+    await c.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_attachments JSONB');
 
     // Учёт токенов GigaChat. Во freemium-режиме квоты у классов моделей
     // независимые — считаем по каждому.

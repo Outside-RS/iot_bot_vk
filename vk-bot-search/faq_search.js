@@ -14,20 +14,34 @@ const MAX_HINTS = 5;
 // - ts_rank — ранжирование по частоте слов (вес 1.0);
 // - similarity из pg_trgm — нечёткое сравнение, ловит опечатки (вес 0.5).
 // Ищем только по вопросу и ключевым словам: ответ в поиске не участвует.
+// Обе части считаются отдельно (lex и trgm), чтобы в логах было видно,
+// за счёт чего нашлась запись: по словам или по похожести написания.
 const SEARCH_SQL = `
-    SELECT id, question, answer,
-        (ts_rank(search_vector, to_tsquery('russian', regexp_replace(plainto_tsquery('russian', $1)::text, '&', '|', 'g'))) * 1.0 +
-         similarity(question || ' ' || COALESCE(keywords, ''), $1) * 0.5) AS score
-    FROM faq
-    WHERE search_vector @@ to_tsquery('russian', regexp_replace(plainto_tsquery('russian', $1)::text, '&', '|', 'g'))
-       OR similarity(question || ' ' || COALESCE(keywords, ''), $1) > 0.1
+    SELECT id, question, answer, lex, trgm, (lex * 1.0 + trgm * 0.5) AS score
+    FROM (
+        SELECT id, question, answer,
+            ts_rank(search_vector, q) AS lex,
+            similarity(question || ' ' || COALESCE(keywords, ''), $1) AS trgm,
+            search_vector @@ q AS lex_match
+        FROM faq, to_tsquery('russian', regexp_replace(plainto_tsquery('russian', $1)::text, '&', '|', 'g')) AS q
+    ) t
+    WHERE lex_match OR trgm > 0.1
     ORDER BY score DESC
     LIMIT $2
 `;
 
+const fmt = (n) => Number(n).toFixed(3);
+
 async function searchFaq(text, limit = 8) {
+    const started = Date.now();
     const res = await db.query(SEARCH_SQL, [text || '', limit]);
-    return res.rows.map(r => ({ ...r, score: Number(r.score) }));
+    const rows = res.rows.map(r => ({ ...r, score: Number(r.score), lex: Number(r.lex), trgm: Number(r.trgm) }));
+
+    const top = rows.slice(0, 3)
+        .map(r => `#${r.id} ${fmt(r.score)} (лексика ${fmt(r.lex)} + триграммы ${fmt(r.trgm)}×0.5)`)
+        .join('; ');
+    console.debug(`[SEARCH] «${String(text || '').replace(/\s+/g, ' ').slice(0, 80)}» → совпадений: ${rows.length} за ${Date.now() - started} мс${top ? `. Лучшие: ${top}` : ''}`);
+    return rows;
 }
 
 /**

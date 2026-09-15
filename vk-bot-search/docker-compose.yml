@@ -17,6 +17,9 @@ services:
       - DB_PORT=5432
       # Ollama, если она стоит на "хосте" (вашем ПК), доступна по этому адресу:
       - OLLAMA_URL=http://host.docker.internal:11434
+    volumes:
+      # Файлы логов на диске сервера: переживают пересборку контейнера
+      - ./logs:/app/logs
 
   db:
     image: postgres:15-alpine
