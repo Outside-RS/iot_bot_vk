@@ -119,7 +119,16 @@ async function processQueue() {
         return; // Обе кассы заняты
     }
 
-    const client = await db.connect();
+    // db.connect() внутри обработчика ошибок: недоступность БД иначе превращалась
+    // в необработанный reject внутри setInterval, и Node завершал весь процесс.
+    let client;
+    try {
+        client = await db.connect();
+    } catch (err) {
+        console.error('[Worker] Нет соединения с БД, пропускаем тик:', err.message);
+        return;
+    }
+
     try {
         await client.query('BEGIN');
 
@@ -144,13 +153,19 @@ async function processQueue() {
             const updatedTask = updatedTaskRes.rows[0];
             console.log(`[Worker] Picked task ${updatedTask.id} (attempt ${updatedTask.attempts})`);
 
-            // Запускаем асинхронно БЕЗ await
-            processTask(updatedTask);
+            // Запускаем асинхронно БЕЗ await — но обязательно с перехватом,
+            // иначе ошибка внутри самого обработчика ошибок уронит процесс
+            processTask(updatedTask)
+                .catch(err => console.error(`[Worker] Unhandled error in task ${updatedTask.id}:`, err.message));
         } else {
             await client.query('COMMIT');
         }
     } catch (err) {
-        await client.query('ROLLBACK');
+        try {
+            await client.query('ROLLBACK');
+        } catch (rollbackErr) {
+            console.error('[Worker] ROLLBACK failed:', rollbackErr.message);
+        }
         console.error('[Worker] DB Error in processQueue:', err.message);
     } finally {
         client.release();
@@ -176,8 +191,14 @@ async function cleanZombieTasks() {
 
 function startWorker() {
     console.log('[Worker] AI Queue worker started');
-    setInterval(processQueue, 3000);
-    setInterval(cleanZombieTasks, 5 * 60 * 1000); // Раз в 5 минут
+    // Колбэк setInterval не имеет владельца, который поймает reject,
+    // поэтому оборачиваем оба цикла явным catch
+    setInterval(() => {
+        processQueue().catch(err => console.error('[Worker] processQueue:', err.message));
+    }, 3000);
+    setInterval(() => {
+        cleanZombieTasks().catch(err => console.error('[Worker] cleanZombieTasks:', err.message));
+    }, 5 * 60 * 1000); // Раз в 5 минут
 }
 
 module.exports = { startWorker };

@@ -34,6 +34,7 @@
         <div class="card">
             <div class="card-header">🔑 Создать новый код доступа</div>
             <form id="addTutorForm" autocomplete="off">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                 <div class="form-row">
                     <div class="form-group">
                         <label>ФИО Администратора</label>
@@ -83,7 +84,8 @@
                                 <td class="actions">
                                     <a href="/tutors/edit/<%= t.code %>" class="action-btn edit" title="Редактировать">✏️</a>
                                     <form action="/tutors/delete/<%= t.code %>" method="POST" 
-                                          onsubmit="return confirm(' Удалить?');" style="display:inline;">
+                                          data-confirm="Удалить?" style="display:inline;">
+                                        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                             <button type="submit" class="action-btn delete" title="Удалить">🗑</button>
                                             </form>
                                     </td>
@@ -115,6 +117,7 @@
             }
         });
     </script>
+    <script src="/js/ui.js"></script>
 </body>
 
 </html>

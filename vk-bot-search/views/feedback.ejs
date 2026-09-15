@@ -70,13 +70,15 @@
                                 <td class="actions">
                                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                                         <form method="POST" action="/feedback/status/<%= f.id %>">
-                                            <select name="status" onchange="this.form.submit()" style="padding: 6px; border-radius: var(--radius); border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); font-family: inherit;">
+                                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                            <select name="status" data-autosubmit style="padding: 6px; border-radius: var(--radius); border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-primary); font-family: inherit;">
                                                 <option value="new" <%= f.status === 'new' ? 'selected' : '' %>>Новое</option>
                                                 <option value="in_progress" <%= f.status === 'in_progress' ? 'selected' : '' %>>В работе</option>
                                                 <option value="resolved" <%= f.status === 'resolved' ? 'selected' : '' %>>Решено</option>
                                             </select>
                                         </form>
-                                        <form method="POST" action="/feedback/delete/<%= f.id %>" onsubmit="return confirm('Точно удалить этот отзыв?');" style="display:inline;">
+                                        <form method="POST" action="/feedback/delete/<%= f.id %>" data-confirm="Точно удалить этот отзыв?" style="display:inline;">
+                                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                             <button type="submit" class="btn btn-danger btn-sm" title="Удалить">🗑</button>
                                         </form>
                                     </div>
@@ -88,5 +90,6 @@
             </table>
         </div>
     </div>
+    <script src="/js/ui.js"></script>
 </body>
 </html>

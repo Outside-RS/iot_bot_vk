@@ -38,6 +38,7 @@
                 <% }); %>
             </datalist>
             <form action="/faq/edit/<%= item.id %>" method="POST">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                 <div class="form-row">
                     <div class="form-group" style="flex: 1;">
                         <label>Категория</label>

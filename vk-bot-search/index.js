@@ -34,17 +34,48 @@ const limiter = rateLimit({
     message: 'Слишком много запросов с вашего IP, пожалуйста, подождите минуту.'
 });
 
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            // 'unsafe-inline' пока нужен для блоков <script> внутри шаблонов.
+            // Обработчики в атрибутах (onclick=…) уже убраны и запрещены через
+            // script-src-attr 'none' (его helmet ставит сам) — именно так
+            // выполнялись внедрённые onerror=… при XSS. Следующий шаг — nonce.
+            scriptSrc: ["'self'", "'unsafe-inline'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            imgSrc: ["'self'", 'data:'],
+            // Главное здесь: даже если XSS всё-таки случится, увести данные
+            // на чужой сервер не выйдет — сеть разрешена только на свой origin.
+            connectSrc: ["'self'"],
+            formAction: ["'self'"],
+            frameAncestors: ["'none'"],
+            objectSrc: ["'none'"],
+            baseUri: ["'self'"],
+            // Панель пока отдаётся по HTTP, принудительный апгрейд её сломает
+            upgradeInsecureRequests: null
+        }
+    }
+}));
 app.use(limiter);
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(express.json({ limit: '50mb' }));
-app.use(express.static('public'));
+// Путь от файла, а не от текущей директории: иначе запуск не из папки проекта
+// оставляет админку без стилей и скриптов
+app.use(express.static(path.join(__dirname, 'public')));
 
-if (!process.env.SESSION_SECRET) {
-    console.warn('[SECURITY] SESSION_SECRET не задан в .env — используется небезопасный default');
+// Без этих секретов приложение не должно подниматься вообще:
+// пустой ADMIN_PASS раньше пускал в панель любого (undefined === undefined),
+// а предсказуемый SESSION_SECRET позволяет подделать cookie администратора.
+const requiredSecrets = ['ADMIN_PASS', 'SESSION_SECRET'];
+const missingSecrets = requiredSecrets.filter(name => !process.env[name] || process.env[name].trim() === '');
+if (missingSecrets.length > 0) {
+    console.error(`[SECURITY] Не заданы обязательные переменные окружения: ${missingSecrets.join(', ')}`);
+    console.error('[SECURITY] Добавьте их в .env и перезапустите. Запуск прерван.');
+    process.exit(1);
 }
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'secret_key_123',
+    secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -55,10 +86,41 @@ app.use(session({
     }
 }));
 
-// 6. Подключение маршрутов админки
+// 6. Защита от CSRF (synchronizer token)
+// Токен хранится в сессии администратора; любая изменяющая операция обязана
+// вернуть его — в скрытом поле формы (_csrf) или в заголовке X-CSRF-Token.
+const crypto = require('crypto');
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+app.use((req, res, next) => {
+    if (req.session.isAdmin && !req.session.csrfToken) {
+        req.session.csrfToken = crypto.randomBytes(32).toString('hex');
+    }
+    res.locals.csrfToken = req.session.csrfToken || '';
+
+    // Форма входа исключена: сессии администратора там ещё нет,
+    // а подделать вход, не зная пароля, всё равно невозможно.
+    if (SAFE_METHODS.has(req.method) || req.path === '/login') return next();
+
+    const sent = (req.body && req.body._csrf) || req.get('x-csrf-token');
+    const expected = req.session.csrfToken;
+
+    const valid = typeof sent === 'string' && typeof expected === 'string' &&
+        sent.length === expected.length &&
+        crypto.timingSafeEqual(Buffer.from(sent), Buffer.from(expected));
+
+    if (!valid) {
+        console.warn(`[SECURITY] Отклонён запрос без валидного CSRF-токена: ${req.method} ${req.path} с IP ${req.ip}`);
+        return res.status(403).send('Запрос отклонён: сессия устарела или форма отправлена со стороннего сайта. Обновите страницу и повторите.');
+    }
+
+    next();
+});
+
+// 7. Подключение маршрутов админки
 app.use('/', adminRoutes);
 
-// 7. Функция запуска ботов для всех активных групп
+// 8. Функция запуска ботов для всех активных групп
 async function startBots() {
     try {
         const groups = await db.query('SELECT * FROM vk_groups WHERE is_active = TRUE');
@@ -93,7 +155,7 @@ async function startBots() {
     }
 }
 
-// 8. Главная функция запуска
+// 9. Главная функция запуска
 async function start() {
     try {
         // Запускаем ботов для всех групп
@@ -123,5 +185,5 @@ async function start() {
     }
 }
 
-// 9. ЗАПУСК
+// 10. ЗАПУСК
 start();

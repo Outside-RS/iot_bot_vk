@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>База Знаний — Админ-панель</title>
     <link rel="stylesheet" href="/css/admin.css">
+    <meta name="csrf-token" content="<%= csrfToken %>">
 </head>
 
 <body>
@@ -49,7 +50,7 @@
                             <div class="card-header">📥 Импорт из JSON-файла</div>
                             <div style="display: flex; align-items: center; gap: 12px; padding: 4px 0 8px;">
                                 <input type="file" id="importFile" accept=".json" style="flex: 1;">
-                                <button class="btn btn-primary" onclick="importFaq(this)" style="white-space: nowrap;">📥 Импортировать</button>
+                                <button class="btn btn-primary" id="importFaqBtn" style="white-space: nowrap;">📥 Импортировать</button>
                             </div>
                             <div id="importResult" style="display: none; margin-top: 8px;"></div>
                         </div>
@@ -58,6 +59,7 @@
                         <div class="card">
                             <div class="card-header">➕ Добавить новый вопрос</div>
                             <form action="/faq/add" method="POST">
+                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                 <datalist id="faq-categories">
                                     <% categories.forEach(function(cat) { %>
                                         <option value="<%= cat %>">
@@ -96,14 +98,15 @@
                             <h2 style="color: var(--text-secondary);">Всего вопросов: <span id="faqVisibleCount"><%= faq.length %></span></h2>
                             <div style="display: flex; align-items: center; gap: 12px;">
                                 <% if (categories.length > 0) { %>
-                                <select id="categoryFilter" onchange="filterByCategory(this.value)" style="width: auto;">
+                                <select id="categoryFilter" style="width: auto;">
                                     <option value="">Все категории</option>
                                     <% categories.forEach(function(cat) { %>
                                         <option value="<%= cat %>"><%= cat %></option>
                                     <% }); %>
                                 </select>
                                 <% } %>
-                                <form action="/faq/export-json" method="POST" onsubmit="return confirm('Перезаписать faq_data.json данными из БД?');">
+                                <form action="/faq/export-json" method="POST" data-confirm="Перезаписать faq_data.json данными из БД?" >
+                                    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                     <button type="submit" class="btn btn-warning" style="white-space: nowrap;">💾 Экспорт в файл</button>
                                 </form>
                                 <a href="/faq/download-json" class="btn btn-success" style="white-space: nowrap;">⬇️ Скачать базу</a>
@@ -154,8 +157,8 @@
                                                         <a href="/faq/edit/<%= item.id %>" class="action-btn edit"
                                                             title="Редактировать">✏️</a>
                                                         <form action="/faq/delete/<%= item.id %>" method="POST"
-                                                            onsubmit="return confirm('Удалить этот вопрос?');"
-                                                            style="display:inline;">
+                                                            data-confirm="Удалить этот вопрос?" style="display:inline;">
+                                                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                                             <button type="submit" class="action-btn delete"
                                                                 title="Удалить">🗑</button>
                                                         </form>
@@ -169,6 +172,8 @@
     </div>
 
     <script>
+        // Токен для изменяющих AJAX-запросов (см. CSRF-middleware в index.js)
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
         function filterByCategory(value) {
             const rows = document.querySelectorAll('tbody tr[data-category]');
             let visible = 0;
@@ -208,7 +213,7 @@
             try {
                 const res = await fetch('/faq/import-json', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
                     body: JSON.stringify(data)
                 });
                 const result = await res.json();
@@ -226,6 +231,16 @@
                 btn.textContent = '📥 Импортировать';
             }
         }
+    </script>
+    <script src="/js/ui.js"></script>
+    <script>
+        // Обработчики вынесены из onclick/onchange (CSP: script-src-attr 'none')
+        document.addEventListener('DOMContentLoaded', () => {
+            const importBtn = document.getElementById('importFaqBtn');
+            importBtn.addEventListener('click', () => importFaq(importBtn));
+            const filter = document.getElementById('categoryFilter');
+            filter.addEventListener('change', () => filterByCategory(filter.value));
+        });
     </script>
 </body>
 

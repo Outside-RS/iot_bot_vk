@@ -115,7 +115,8 @@
 
                         <div class="bulk-actions">
                             <form action="/users/promote-all" method="POST"
-                                onsubmit="return confirm('Перевести ВСЕХ отфильтрованных на +1 курс?');">
+                                data-confirm="Перевести ВСЕХ отфильтрованных на +1 курс?" >
+                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                 <input type="hidden" name="course" value="<%= filter_course || '' %>">
                                 <input type="hidden" name="group" value="<%= filter_group || '' %>">
                                 <input type="hidden" name="role" value="<%= filter_role || '' %>">
@@ -186,19 +187,22 @@
                                                         <% if (!u.is_graduated) { %>
                                                             <form action="/users/promote/<%= u.vk_id %>" method="POST"
                                                                 style="display:inline;">
+                                                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                                                 <button type="submit" class="btn btn-warning btn-sm"
                                                                     title="Курс +1">🔼</button>
                                                             </form>
                                                             <form action="/users/graduate/<%= u.vk_id %>" method="POST"
                                                                 style="display:inline;"
-                                                                onsubmit="return confirm('Пометить как выпускника?');">
+                                                                data-confirm="Пометить как выпускника?" >
+                                                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                                                 <button type="submit" class="btn btn-primary btn-sm"
                                                                     title="Выпустить">🎓</button>
                                                             </form>
                                                             <% } %>
                                                                 <form action="/users/delete/<%= u.vk_id %>"
                                                                     method="POST" style="display:inline;"
-                                                                    onsubmit="return confirm('Удалить пользователя?');">
+                                                                    data-confirm="Удалить пользователя?" >
+                                                                    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                                                     <button type="submit" class="btn btn-danger btn-sm"
                                                                         title="Удалить">🗑</button>
                                                                 </form>
@@ -210,6 +214,7 @@
                             </table>
                         </div>
     </div>
+    <script src="/js/ui.js"></script>
 </body>
 
 </html>

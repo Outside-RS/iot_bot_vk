@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const { db } = require('../database');
@@ -34,14 +35,38 @@ router.get('/login', (req, res) => {
     res.render('login', { error: null });
 });
 
+// Сравнение за постоянное время: хэшируем оба значения, чтобы уравнять длину
+function passwordMatches(given, expected) {
+    const a = crypto.createHash('sha256').update(given).digest();
+    const b = crypto.createHash('sha256').update(expected).digest();
+    return crypto.timingSafeEqual(a, b);
+}
+
 router.post('/login', loginLimiter, (req, res) => {
-    const { password } = req.body;
-    if (password === process.env.ADMIN_PASS) {
+    const password = req.body ? req.body.password : undefined;
+    const expected = process.env.ADMIN_PASS;
+
+    // Явные проверки типов: без них запрос без поля password при незаданном
+    // ADMIN_PASS давал undefined === undefined и пускал в панель.
+    if (!expected || typeof password !== 'string' || password.length === 0) {
+        console.warn(`[SECURITY] Неудачная попытка входа с IP ${req.ip}`);
+        return res.status(401).render('login', { error: 'Неверный пароль' });
+    }
+
+    if (!passwordMatches(password, expected)) {
+        console.warn(`[SECURITY] Неверный пароль при входе с IP ${req.ip}`);
+        return res.status(401).render('login', { error: 'Неверный пароль' });
+    }
+
+    // Новая сессия после входа — защита от фиксации сессии
+    req.session.regenerate(err => {
+        if (err) {
+            console.error('[Admin] Ошибка создания сессии:', err.message);
+            return res.status(500).render('login', { error: 'Ошибка сервера, попробуйте ещё раз' });
+        }
         req.session.isAdmin = true;
         req.session.save(() => res.redirect('/'));
-    } else {
-        res.render('login', { error: 'Неверный пароль' });
-    }
+    });
 });
 
 router.get('/logout', (req, res) => {
@@ -53,6 +78,14 @@ router.get('/', requireAuth, noCache, async (req, res) => {
     try {
         const ticketCount = await db.query('SELECT count(*) FROM tickets');
         const botsCount = Object.keys(global.bots || {}).length;
+
+        // Тестовый код доступа из миграции: пока он в базе, роль администратора
+        // может получить любой, кто введёт его в боте. Предупреждаем явно.
+        let testCodeActive = false;
+        try {
+            const testCode = await db.query("SELECT code FROM operator_codes WHERE code = 'ADMIN-MAIN'");
+            testCodeActive = testCode.rows.length > 0;
+        } catch (e) { /* таблицы может не быть до миграции */ }
 
         // Получаем настройки ИИ из БД
         let aiSettings = { ollama_url: 'http://127.0.0.1:11434', ollama_model: 'qwen2.5:7b', gigachat_model: 'GigaChat-2' };
@@ -93,6 +126,7 @@ router.get('/', requireAuth, noCache, async (req, res) => {
         res.render('dashboard', {
             count: ticketCount.rows[0].count,
             botsCount,
+            testCodeActive,
             ollamaStatus,
             ollamaModel: aiSettings.ollama_model || 'qwen2.5:7b',
             gigachatStatus,

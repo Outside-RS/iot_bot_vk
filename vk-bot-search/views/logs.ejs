@@ -82,15 +82,27 @@
         const content = document.getElementById('logs-content');
         const autoScroll = document.getElementById('autoScroll');
 
-        function parseLogLine(line) {
+        // Строка лога собирается из DOM-узлов и textContent, а не из HTML-строки:
+        // в логи попадает текст студентов, и через innerHTML сообщение вида
+        // <img src=x onerror=...> выполнялось в браузере администратора (XSS).
+        function buildLogLine(line) {
+            const div = document.createElement('div');
+            div.className = 'log-line';
             // Формат: [2026-05-18 22:50:00] INFO: message
-            const match = line.match(/^\[(.*?)\] (INFO|ERROR): (.*)$/s);
-            if (match) {
-                const [_, time, level, msg] = match;
-                const levelClass = level === 'ERROR' ? 'log-error' : 'log-info';
-                return `<div class="log-line"><span class="log-time">[${time}]</span><span class="${levelClass}">${level}:</span> ${msg}</div>`;
+            const match = String(line).match(/^\[(.*?)\] (INFO|ERROR): (.*)$/s);
+            if (!match) {
+                div.textContent = line;
+                return div;
             }
-            return `<div class="log-line">${line}</div>`;
+            const [, time, level, msg] = match;
+            const timeEl = document.createElement('span');
+            timeEl.className = 'log-time';
+            timeEl.textContent = `[${time}]`;
+            const levelEl = document.createElement('span');
+            levelEl.className = level === 'ERROR' ? 'log-error' : 'log-info';
+            levelEl.textContent = `${level}:`;
+            div.append(timeEl, levelEl, ' ' + msg);
+            return div;
         }
 
         async function fetchLogs() {
@@ -98,7 +110,7 @@
                 const res = await fetch('/api/logs');
                 const logs = await res.json();
                 
-                content.innerHTML = logs.map(parseLogLine).join('');
+                content.replaceChildren(...logs.map(buildLogLine));
                 
                 if (autoScroll.checked) {
                     terminal.scrollTop = terminal.scrollHeight;

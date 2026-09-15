@@ -45,6 +45,7 @@
                         <div class="card">
                             <div class="card-header">➕ Добавить группу</div>
                             <form action="/groups/add" method="POST">
+                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                 <div class="form-row">
                                     <div class="form-group">
                                         <label>ID группы</label>
@@ -104,13 +105,15 @@
                                                     <td class="actions">
                                                         <form action="/groups/toggle/<%= g.id %>" method="POST"
                                                             style="display:inline;">
+                                                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                                             <button type="submit" class="btn btn-warning btn-sm">
                                                                 <%= g.is_active ? '⏸ Откл' : '▶ Вкл' %>
                                                             </button>
                                                         </form>
                                                         <form action="/groups/delete/<%= g.id %>" method="POST"
                                                             style="display:inline;"
-                                                            onsubmit="return confirm('Удалить группу?');">
+                                                            data-confirm="Удалить группу?" >
+                                                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                                                             <button type="submit" class="btn btn-danger btn-sm">🗑
                                                                 Удалить</button>
                                                         </form>
@@ -122,6 +125,7 @@
                             </table>
                         </div>
     </div>
+    <script src="/js/ui.js"></script>
 </body>
 
 </html>

@@ -36,25 +36,26 @@
         </div>
 
         <div class="card">
-            <form action="/broadcast/send" method="POST" onsubmit="return confirm('Вы уверены?');">
+            <form action="/broadcast/send" method="POST" data-confirm="Вы уверены?" >
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
 
                 <div class="form-group">
                     <label><b>Кому отправить?</b></label>
                     <div class="radio-group">
                         <label class="radio-label">
-                            <input type="radio" name="target" value="all" checked onclick="toggleGroupInput(false)">
+                            <input type="radio" name="target" value="all" checked>
                             Все пользователи
                         </label>
                         <label class="radio-label">
-                            <input type="radio" name="target" value="students" onclick="toggleGroupInput(false)">
+                            <input type="radio" name="target" value="students">
                             Только Студенты
                         </label>
                         <label class="radio-label">
-                            <input type="radio" name="target" value="tutors" onclick="toggleGroupInput(false)">
+                            <input type="radio" name="target" value="tutors">
                             Только Администраторы
                         </label>
                         <label class="radio-label">
-                            <input type="radio" name="target" value="group" onclick="toggleGroupInput(true)">
+                            <input type="radio" name="target" value="group">
                             Конкретная группа
                         </label>
                     </div>
@@ -93,10 +94,17 @@
     </div>
 
     <script>
+        // Переключение поля «номер группы» — вынесено из onclick (CSP)
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('input[name="target"]').forEach(radio => {
+                radio.addEventListener('change', () => toggleGroupInput(radio.value === 'group'));
+            });
+        });
         function toggleGroupInput(show) {
             document.getElementById('groupInput').style.display = show ? 'block' : 'none';
         }
     </script>
+    <script src="/js/ui.js"></script>
 </body>
 
 </html>

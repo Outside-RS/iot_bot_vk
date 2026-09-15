@@ -8,6 +8,28 @@ const log = (msg) => console.log(`[Bot] ${msg}`);
 const REGEX_FIO = /^[А-Яа-яЁё]+\s+[А-Яа-яЁё]+.*$/;
 const REGEX_GROUP = /^[А-Я]{2,}-\d{6}$/;
 
+// Payload кнопки формируется на стороне клиента, а VK API позволяет отправить
+// сообщение с произвольным payload. Поэтому всё, что приходит оттуда, считаем
+// недоверенным: id приводим к числу, права на объект проверяем отдельным запросом.
+const parseId = (value) => {
+    const id = Number.parseInt(value, 10);
+    return Number.isInteger(id) && id > 0 ? id : null;
+};
+
+// Возвращает тикет, только если пользователь — его участник (студент или назначенный админ)
+async function getTicketIfParticipant(ticketId, vkId) {
+    const res = await db.query(
+        'SELECT * FROM tickets WHERE id = $1 AND (student_vk_id = $2 OR operator_vk_id = $2)',
+        [ticketId, vkId]
+    );
+    return res.rows[0] || null;
+}
+
+async function getRole(vkId) {
+    const res = await db.query('SELECT role FROM users WHERE vk_id = $1', [vkId]);
+    return res.rows.length > 0 ? res.rows[0].role : null;
+}
+
 const resolveAttachments = (attachments) => {
     if (!attachments) return [];
     return attachments.map(att => `${att.type}${att.ownerId}_${att.id}${att.accessKey ? '_' + att.accessKey : ''}`);
@@ -57,7 +79,13 @@ async function handleMessage(context, vk, groupId) {
                 return;
             }
             if (messagePayload.command === 'take_ticket') {
-                const ticketId = messagePayload.ticket_id;
+                const ticketId = parseId(messagePayload.ticket_id);
+                if (!ticketId) return context.send('Некорректный номер тикета.');
+                // Брать тикеты в работу может только администратор
+                if (await getRole(senderId) !== 'operator') {
+                    console.warn(`[SECURITY] Отказ take_ticket: ${senderId} не администратор (тикет ${ticketId}) — возможна подделка кнопки`);
+                    return context.send('Эта команда доступна только администраторам.');
+                }
                 const ticketRes = await db.query('SELECT * FROM tickets WHERE id = $1', [ticketId]);
                 if (ticketRes.rows.length === 0) return context.send('Тикет не найден.');
                 if (ticketRes.rows[0].status !== 'open') return context.send('Тикет уже занят.');
@@ -68,7 +96,14 @@ async function handleMessage(context, vk, groupId) {
                 return;
             }
             if (messagePayload.command === 'open_chat') {
-                const ticketId = messagePayload.ticket_id;
+                const ticketId = parseId(messagePayload.ticket_id);
+                if (!ticketId) return context.send('Некорректный номер тикета.');
+                // Открыть переписку может только участник этого тикета
+                const ticket = await getTicketIfParticipant(ticketId, senderId);
+                if (!ticket) {
+                    console.warn(`[SECURITY] Отказ open_chat: ${senderId} не участник тикета ${ticketId} — возможна подделка кнопки`);
+                    return context.send('Тикет не найден или недоступен.');
+                }
                 await db.query("UPDATE users SET current_chat_ticket_id = $1, state = 'chat_mode' WHERE vk_id = $2", [ticketId, senderId]);
                 const userRes = await db.query('SELECT role FROM users WHERE vk_id = $1', [senderId]);
                 const kb = userRes.rows[0].role === 'operator' ? Keyboard.builder().textButton({ label: '🏁 Завершить этот тикет', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '⬅️ Назад к списку', color: Keyboard.SECONDARY_COLOR }) : Keyboard.builder().textButton({ label: '🏁 Завершить вопрос', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '⬅️ В меню', color: Keyboard.SECONDARY_COLOR });
@@ -82,7 +117,17 @@ async function handleMessage(context, vk, groupId) {
                 return;
             }
             if (messagePayload.command === 'manage_ticket') {
-                const ticketId = messagePayload.ticket_id;
+                const ticketId = parseId(messagePayload.ticket_id);
+                if (!ticketId) return context.send('Некорректный номер тикета.');
+                // Управлять заявкой может только её автор и только пока её не взяли в работу
+                const own = await db.query(
+                    "SELECT id FROM tickets WHERE id = $1 AND student_vk_id = $2 AND status = 'open'",
+                    [ticketId, senderId]
+                );
+                if (own.rows.length === 0) {
+                    console.warn(`[SECURITY] Отказ manage_ticket: ${senderId} не автор тикета ${ticketId} (или тикет уже в работе)`);
+                    return context.send('Заявка не найдена или её уже взяли в работу.');
+                }
                 await db.query("UPDATE users SET state = 'ticket_manage_menu', current_chat_ticket_id = $1 WHERE vk_id = $2", [ticketId, senderId]);
                 await context.send({ message: `📝 Управление #${ticketId}`, keyboard: Keyboard.builder().textButton({ label: '✏️ Изменить текст', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '❌ Удалить заявку', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }) });
                 return;
@@ -415,8 +460,8 @@ async function processState(context, user, vk, groupId) {
         case 'edit_tutor_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1 WHERE vk_id = $2", [text, senderId]); await db.query("UPDATE operator_codes SET admin_name = $1 WHERE code = $2", [text, user.linked_code]); await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await context.send('Обновлено!'); await mainMenu(context, user); break;
 
         case 'profile_delete_confirm': if (text === 'Да') { await db.query('DELETE FROM users WHERE vk_id = $1', [senderId]); await context.send({ message: 'Профиль удален!' }); } else { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); } break;
-        case 'ticket_manage_menu': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); return mainMenu(context, user); } if (text === '❌ Удалить заявку') { await db.query("DELETE FROM tickets WHERE id = $1", [user.current_chat_ticket_id]); await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); await context.send('Удалено.'); return mainMenu(context, user); } if (text === '✏️ Изменить текст') { await db.query("UPDATE users SET state = 'ticket_edit_text' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Новый текст:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
-        case 'ticket_edit_text': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'ticket_manage_menu' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Меню:', keyboard: Keyboard.builder().textButton({ label: '✏️', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '❌', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '🔙', color: Keyboard.SECONDARY_COLOR }) }); } await db.query("UPDATE tickets SET question = $1 WHERE id = $2", [text, user.current_chat_ticket_id]); await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); await context.send('Обновлено!'); return mainMenu(context, user); break;
+        case 'ticket_manage_menu': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); return mainMenu(context, user); } if (text === '❌ Удалить заявку') { await db.query("DELETE FROM tickets WHERE id = $1 AND student_vk_id = $2", [user.current_chat_ticket_id, senderId]); await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); await context.send('Удалено.'); return mainMenu(context, user); } if (text === '✏️ Изменить текст') { await db.query("UPDATE users SET state = 'ticket_edit_text' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Новый текст:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
+        case 'ticket_edit_text': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'ticket_manage_menu' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Меню:', keyboard: Keyboard.builder().textButton({ label: '✏️', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '❌', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '🔙', color: Keyboard.SECONDARY_COLOR }) }); } await db.query("UPDATE tickets SET question = $1 WHERE id = $2 AND student_vk_id = $3", [text, user.current_chat_ticket_id, senderId]); await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); await context.send('Обновлено!'); return mainMenu(context, user); break;
     }
 }
 

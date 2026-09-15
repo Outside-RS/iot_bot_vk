@@ -32,6 +32,7 @@
 
         <div class="card">
             <form action="/tutors/edit/<%= tutor.code %>" method="POST">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
                 <div class="form-group">
                     <label>Код доступа (Нельзя изменить)</label>
                     <input type="text" value="<%= tutor.code %>" disabled style="opacity: 0.6; cursor: not-allowed;">

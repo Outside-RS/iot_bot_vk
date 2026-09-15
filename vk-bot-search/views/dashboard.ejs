@@ -6,6 +6,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Дашборд — Админ-панель</title>
     <link rel="stylesheet" href="/css/admin.css">
+    <style>
+        .test-code-warning {
+            background: #3a2a12;
+            border: 1px solid #b8860b;
+            border-left: 4px solid #ffb020;
+            color: #ffd591;
+            padding: 14px 18px;
+            border-radius: 8px;
+            margin-bottom: 22px;
+        }
+        .test-code-warning p { margin: 6px 0 0; font-size: 14px; line-height: 1.5; }
+        .test-code-warning code { background: rgba(0,0,0,.35); padding: 1px 5px; border-radius: 4px; }
+        .test-code-warning a { color: #ffb020; }
+    </style>
+    <meta name="csrf-token" content="<%= csrfToken %>">
 </head>
 
 <body>
@@ -30,6 +45,17 @@
     <div class="container">
         <h1 class="page-title">📊 Обзор системы</h1>
 
+        <% if (typeof testCodeActive !== 'undefined' && testCodeActive) { %>
+            <div class="test-code-warning">
+                <strong>⚠️ Активен тестовый код доступа <code>ADMIN-MAIN</code></strong>
+                <p>
+                    Пока этот код существует, роль администратора в боте может получить любой,
+                    кто его введёт — код опубликован в исходниках проекта.
+                    Удалите его на странице <a href="/tutors">Администраторы</a>, когда заведёте рабочие коды.
+                </p>
+            </div>
+        <% } %>
+
         <!-- Статистика -->
         <div class="stats-grid">
             <div class="stat-card">
@@ -46,7 +72,7 @@
             </div>
 
             <!-- Карточка ИИ-ассистента (кликабельная) -->
-            <div class="stat-card ai-card" id="aiCard" onclick="openAiModal()">
+            <div class="stat-card ai-card" id="aiCard">
                 <h3>🤖 ИИ-ассистент</h3>
                 <div class="ai-status-list">
                     <div class="ai-status-row">
@@ -104,7 +130,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h2>⚙️ Настройки ИИ-ассистента</h2>
-                <button class="modal-close" onclick="closeAiModal()">✕</button>
+                <button class="modal-close" id="aiModalClose">✕</button>
             </div>
 
             <div id="aiModalLoading" class="modal-loading">
@@ -176,17 +202,17 @@
                                 Текущий ключ: <code id="gigachatMaskedKey"></code>
                                 <br><small>Оставьте поле пустым, чтобы сохранить текущий</small>
                             </div>
-                            <button class="btn btn-danger btn-sm" onclick="deleteGigaChatKey()">Удалить ключ</button>
+                            <button class="btn btn-danger btn-sm" id="deleteKeyBtn">Удалить ключ</button>
                         </div>
                     </div>
                 </div>
 
                 <!-- Кнопки -->
                 <div class="modal-actions">
-                    <button class="btn btn-primary" id="saveAiBtn" onclick="saveAiSettings()">
+                    <button class="btn btn-primary" id="saveAiBtn">
                         💾 Сохранить
                     </button>
-                    <button class="btn btn-danger" style="margin-left: 10px;" onclick="closeAiModal()">
+                    <button class="btn btn-danger" id="aiModalCancel" style="margin-left: 10px;">
                         Отмена
                     </button>
                 </div>
@@ -197,6 +223,8 @@
     </div>
 
     <script>
+        // Токен для изменяющих AJAX-запросов (см. CSRF-middleware в index.js)
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
         function openAiModal() {
             document.getElementById('aiModal').classList.add('active');
             document.getElementById('aiModalLoading').style.display = 'flex';
@@ -286,7 +314,7 @@
 
                 const res = await fetch('/ai-settings', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
                     body: JSON.stringify(body)
                 });
 
@@ -317,7 +345,7 @@
 
             const result = document.getElementById('aiSaveResult');
             try {
-                const res = await fetch('/ai-settings/gigachat-key', { method: 'DELETE' });
+                const res = await fetch('/ai-settings/gigachat-key', { method: 'DELETE', headers: { 'X-CSRF-Token': csrfToken } });
                 const data = await res.json();
 
                 if (data.success) {
@@ -334,6 +362,16 @@
                 result.style.display = 'block';
             }
         }
+    </script>
+    <script>
+        // Обработчики модалки ИИ — вынесены из onclick (CSP: script-src-attr 'none')
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('aiCard').addEventListener('click', openAiModal);
+            document.getElementById('aiModalClose').addEventListener('click', closeAiModal);
+            document.getElementById('aiModalCancel').addEventListener('click', closeAiModal);
+            document.getElementById('saveAiBtn').addEventListener('click', saveAiSettings);
+            document.getElementById('deleteKeyBtn').addEventListener('click', deleteGigaChatKey);
+        });
     </script>
 </body>
 
