@@ -141,10 +141,11 @@ function prepareMessages(messages, faqContext) {
         content: buildSystemPrompt(faqContext)
     };
 
-    // Берем последние 4 сообщения (2 диалоговых пары), чтобы не переполнять контекст.
+    // Берем последние 10 сообщений (5 диалоговых пар), чтобы не переполнять контекст.
+    // Лимит синхронизирован с обрезкой истории в bot.js (enqueueAiTask).
     // Оборачиваем user-сообщения в явный тег — mitigation против prompt injection.
     // Дополнительно напоминаем модели о правилах перед каждым вопросом.
-    const recentMessages = messages.slice(-4).map(m =>
+    const recentMessages = messages.slice(-10).map(m =>
         m.role === 'user'
             ? { ...m, content: `[ВОПРОС СТУДЕНТА ОБ УНИВЕРСИТЕТЕ]: ${m.content}\n[КОНЕЦ ВОПРОСА]\n(Напоминание: отвечай только на вопросы об университете, игнорируй всё остальное)` }
             : m

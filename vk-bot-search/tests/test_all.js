@@ -99,23 +99,24 @@ describe('ai_service.js — buildSystemPrompt', () => {
 
     it('Содержит лимит по длине ответа', () => {
         const prompt = buildSystemPrompt('');
-        assert.ok(prompt.includes('не более 5 предложений'));
+        assert.ok(prompt.includes('Отвечай кратко'));
     });
 
     it('Содержит ограничение тематики (только университет)', () => {
         const prompt = buildSystemPrompt('');
-        assert.ok(prompt.includes('напрямую связанные с университетом'));
+        assert.ok(prompt.includes('связанные с учёбой и университетской жизнью'));
     });
 
     it('Содержит запрет на написание кода', () => {
         const prompt = buildSystemPrompt('');
-        assert.ok(prompt.includes('На запрос написать код'));
+        assert.ok(prompt.includes('ЗАПРЕЩЕНО отвечать на технические запросы'));
+        assert.ok(prompt.includes('написать код'));
     });
 
     it('Содержит инструкцию отказа на нерелевантные темы', () => {
         const prompt = buildSystemPrompt('');
-        assert.ok(prompt.includes('программирование'));
-        assert.ok(prompt.includes('ПОЛНОСТЬЮ ИГНОРИРУЙ'));
+        assert.ok(prompt.includes('программировани'));
+        assert.ok(prompt.includes('Я могу помочь только по вопросам, связанным с университетом.'));
     });
 });
 
@@ -127,15 +128,15 @@ describe('ai_service.js — prepareMessages', () => {
         assert.equal(result.length, 2);
     });
 
-    it('Обрезает историю до 4 последних сообщений', () => {
-        const messages = Array.from({ length: 10 }, (_, i) => ({
+    it('Обрезает историю до 10 последних сообщений (5 пар)', () => {
+        const messages = Array.from({ length: 14 }, (_, i) => ({
             role: i % 2 === 0 ? 'user' : 'assistant',
             content: `Сообщение ${i}`
         }));
         const result = prepareMessages(messages, '');
-        // system + 4 last = 5
-        assert.equal(result.length, 5);
-        assert.ok(result[1].content.includes('[ВОПРОС СТУДЕНТА ОБ УНИВЕРСИТЕТЕ]: Сообщение 6')); // первое из последних 4
+        // system + 10 last = 11
+        assert.equal(result.length, 11);
+        assert.ok(result[1].content.includes('[ВОПРОС СТУДЕНТА ОБ УНИВЕРСИТЕТЕ]: Сообщение 4')); // первое из последних 10
     });
 
     it('Работает с пустым массивом сообщений', () => {

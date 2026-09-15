@@ -466,6 +466,11 @@ async function enqueueAiTask(context, user, question, faqContextText, groupId) {
         let aiCtx = user.ai_context || [];
         aiCtx.push({ role: 'user', content: question });
 
+        // Ограничиваем историю диалога последними 5-ю парами вопрос-ответ (10 сообщений), чтобы не переполнять контекст
+        if (aiCtx.length > 10) {
+            aiCtx = aiCtx.slice(aiCtx.length - 10);
+        }
+
         await db.query("UPDATE users SET state = 'ai_dialogue_mode', ai_context = $1, vk_group_id = $2 WHERE vk_id = $3", [JSON.stringify(aiCtx), groupId, senderId]);
 
         await db.query(
