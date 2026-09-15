@@ -138,6 +138,31 @@ router.get('/', requireAuth, noCache, async (req, res) => {
     }
 });
 
+// Расход токенов в формате для дашборда
+async function readUsage() {
+    const u = await db.query('SELECT model_class, model_id, tokens_used, quota, exhausted FROM ai_usage ORDER BY quota DESC');
+    return u.rows.map(r => ({
+        modelClass: r.model_class,
+        modelId: r.model_id,
+        used: Number(r.tokens_used),
+        quota: Number(r.quota),
+        exhausted: r.exhausted,
+        percent: r.quota > 0 ? Math.round((Number(r.tokens_used) / Number(r.quota)) * 100) : 0
+    }));
+}
+
+// === API: Сверить остаток токенов с личным кабинетом Сбера (кнопка ↻) ===
+router.post('/api/ai-balance/refresh', requireAuth, async (req, res) => {
+    try {
+        const { syncBalanceFromGigaChat } = require('../ai_service');
+        await syncBalanceFromGigaChat();
+        res.json({ usage: await readUsage(), syncedAt: new Date().toISOString() });
+    } catch (e) {
+        console.error('[Admin] Не удалось получить баланс GigaChat:', e.message);
+        res.status(502).json({ error: e.message });
+    }
+});
+
 // === API: Статус ИИ (AJAX) ===
 router.get('/api/ai-status', requireAuth, async (req, res) => {
     try {
@@ -162,6 +187,12 @@ router.get('/api/ai-status', requireAuth, async (req, res) => {
             }
         } catch (e) { }
 
+        // Расход токенов по классам моделей (у каждого своя независимая квота)
+        let usage = [];
+        try {
+            usage = await readUsage();
+        } catch (e) { /* таблицы нет до запуска migrate_update.js */ }
+
         // Статус GigaChat
         let gigachatStatus = settings.gigachat_key ? 'configured' : 'no_key';
 
@@ -183,7 +214,8 @@ router.get('/api/ai-status', requireAuth, async (req, res) => {
                 status: gigachatStatus,
                 model: settings.gigachat_model || 'GigaChat-2',
                 scope: settings.gigachat_scope || 'GIGACHAT_API_PERS',
-                maskedKey
+                maskedKey,
+                usage
             }
         });
     } catch (e) {
@@ -612,20 +644,24 @@ router.post('/groups/add', requireAuth, noCache, async (req, res) => {
         );
 
         // Динамически запускаем бота сразу (без перезапуска сервера)
+        let startError = null;
         try {
             const botInstance = createBotInstance(access_token, group_id, group_name);
             await botInstance.updates.start();
             global.bots[group_id] = botInstance;
             console.log(`🚀 Бот динамически запущен: ${group_name}`);
         } catch (botErr) {
-            console.error(`⚠️ Не удалось запустить бота: ${botErr.message}`);
+            startError = botErr.message;
+            console.error(`[ADMIN] Не удалось запустить бота ${group_name}: ${botErr.message}`);
         }
 
+        // Сообщение отражает реальный результат: группа могла сохраниться,
+        // но бот не стартовать (неверный токен, выключен Long Poll, ограничение списка групп)
         const result = await db.query('SELECT * FROM vk_groups ORDER BY created_at DESC');
         res.render('groups', {
             groups: result.rows,
-            error: null,
-            success: `✅ Группа "${group_name}" добавлена и запущена!`
+            error: startError ? `⚠️ Группа "${group_name}" сохранена, но бот не запущен: ${startError}` : null,
+            success: startError ? null : `✅ Группа "${group_name}" добавлена и запущена!`
         });
     } catch (e) {
         console.error('[Admin] Error:', e.message);

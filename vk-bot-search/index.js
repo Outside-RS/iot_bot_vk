@@ -130,7 +130,16 @@ async function startBots() {
             return;
         }
 
+        const allowed = createBotInstance.getAllowedGroupIds();
+        if (allowed.length > 0) {
+            console.info(`[BOT] Локальный режим: подключаемся только к группам ${allowed.join(', ')} (ALLOWED_GROUP_IDS)`);
+        }
+
         for (const group of groups.rows) {
+            if (!createBotInstance.isGroupAllowed(group.group_id)) {
+                console.info(`[BOT] Пропущена группа ${group.group_name} (ID: ${group.group_id}) — нет в ALLOWED_GROUP_IDS`);
+                continue;
+            }
             try {
                 const botInstance = createBotInstance(
                     group.access_token,
@@ -169,14 +178,25 @@ async function start() {
         app.listen(PORT, () => {
             console.log(`🌍 Админка доступна: http://localhost:${PORT}`);
             
-            // Автоматический запуск frpc туннеля (без Docker)
+            // Запуск frpc-туннеля без Docker — ТОЛЬКО по явному флагу.
+            // Раньше frpc.exe стартовал автоматически, если лежал в папке, и при
+            // локальном тестировании публиковал админку на тот же сервер и под
+            // тем же именем, что и продовый туннель. В проде туннель работает
+            // в отдельном контейнере docker compose, флаг ему не нужен.
             const fs = require('fs');
             const { spawn } = require('child_process');
-            if (fs.existsSync('./frpc.exe')) {
-                console.log('🔗 Запускаем проброс портов (frpc)...');
-                const frp = spawn('./frpc.exe', ['-c', './frpc.toml']);
-                frp.stdout.on('data', data => console.log(`[FRPC] ${data.toString().trim()}`));
-                frp.stderr.on('data', data => console.error(`[FRPC ERR] ${data.toString().trim()}`));
+            const frpcPath = path.join(__dirname, 'frpc.exe');
+            const frpcConfig = path.join(__dirname, 'frpc.toml');
+
+            if (process.env.ENABLE_FRPC === 'true' && fs.existsSync(frpcPath)) {
+                console.info('[FRPC] Запускаем проброс портов...');
+                const frp = spawn(frpcPath, ['-c', frpcConfig]);
+                frp.stdout.on('data', data => console.info(`[FRPC] ${data.toString().trim()}`));
+                frp.stderr.on('data', data => console.warn(`[FRPC] ${data.toString().trim()}`));
+                // Без обработчика ошибка запуска (нет файла, нет прав) роняет процесс
+                frp.on('error', err => console.error('[FRPC] Не удалось запустить туннель:', err));
+            } else if (fs.existsSync(frpcPath)) {
+                console.info('[FRPC] Туннель выключен — работаем только на localhost (для включения ENABLE_FRPC=true)');
             }
         });
 

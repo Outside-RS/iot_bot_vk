@@ -21,6 +21,32 @@
         .test-code-warning a { color: #ffb020; }
     </style>
     <meta name="csrf-token" content="<%= csrfToken %>">
+    <style>
+        .quota-box { background: rgba(255,255,255,.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
+        .quota-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .quota-title { font-size: 13px; opacity: .8; }
+        .quota-refresh {
+            width: 28px; height: 28px; border-radius: 6px; flex-shrink: 0;
+            border: 1px solid var(--border-color); background: transparent; color: inherit;
+            font-size: 16px; line-height: 1; cursor: pointer; opacity: .75;
+            transition: opacity .15s, background .15s;
+        }
+        .quota-refresh:hover { opacity: 1; background: rgba(255,255,255,.06); }
+        .quota-refresh:disabled { cursor: default; opacity: .5; }
+        .quota-refresh.spinning { animation: quota-spin .8s linear infinite; }
+        @keyframes quota-spin { to { transform: rotate(360deg); } }
+        .quota-sync { font-size: 12px; opacity: .6; margin-top: 4px; }
+        .quota-sync.ok { color: #3ba55d; opacity: .9; }
+        .quota-sync.fail { color: #d83c3e; opacity: .9; }
+        .quota-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 13px; }
+        .quota-row .name { width: 150px; flex-shrink: 0; }
+        .quota-bar { flex: 1; height: 6px; background: rgba(255,255,255,.08); border-radius: 3px; overflow: hidden; }
+        .quota-fill { height: 100%; background: #3ba55d; }
+        .quota-fill.warn { background: #ffb020; }
+        .quota-fill.full { background: #d83c3e; }
+        .quota-val { width: 150px; text-align: right; flex-shrink: 0; opacity: .75; font-variant-numeric: tabular-nums; }
+        .quota-note { font-size: 12px; opacity: .55; margin-top: 8px; line-height: 1.4; }
+    </style>
 </head>
 
 <body>
@@ -196,6 +222,17 @@
                         </div>
                     </div>
 
+                    <div class="quota-box" id="gigachatQuota" style="display: none;">
+                        <div class="quota-head">
+                            <div class="quota-title">Расход токенов по классам моделей</div>
+                            <button type="button" class="quota-refresh" id="quotaRefreshBtn"
+                                    title="Сверить с личным кабинетом Сбера" aria-label="Обновить данные о лимитах">↻</button>
+                        </div>
+                        <div id="quotaRows"></div>
+                        <div class="quota-sync" id="quotaSync">Учёт бота. Нажмите ↻, чтобы сверить с личным кабинетом Сбера.</div>
+                        <div class="quota-note">Во freemium-режиме квоты классов независимы: когда заканчивается один, бот сам переходит к следующему.</div>
+                    </div>
+
                     <div class="info-box" id="gigachatKeyInfo" style="display: none;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <div>
@@ -278,6 +315,8 @@
                 document.getElementById('gigachatScope').value = data.gigachat.scope;
                 document.getElementById('gigachatModel').value = data.gigachat.model;
 
+                renderQuota(data.gigachat.usage || []);
+
                 if (data.gigachat.maskedKey) {
                     document.getElementById('gigachatKeyInfo').style.display = 'block';
                     document.getElementById('gigachatMaskedKey').textContent = data.gigachat.maskedKey;
@@ -340,6 +379,79 @@
             }
         }
 
+        // Отрисовка расхода квот. Значения приходят из БД, но принципиально
+        // собираем DOM без innerHTML — единый подход после истории с XSS в логах.
+        function renderQuota(usage) {
+            const box = document.getElementById('gigachatQuota');
+            const rows = document.getElementById('quotaRows');
+            rows.replaceChildren();
+
+            if (!usage.length) {
+                box.style.display = 'none';
+                return;
+            }
+            box.style.display = 'block';
+
+            // Израсходовано — до тысячных миллиона (шаг 1000 токенов), квота — целыми миллионами
+            const usedMln = n => (n / 1000000).toLocaleString('ru-RU', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' млн';
+            const quotaMln = n => (n / 1000000).toLocaleString('ru-RU', { maximumFractionDigits: 3 }) + ' млн';
+
+            for (const u of usage) {
+                const row = document.createElement('div');
+                row.className = 'quota-row';
+
+                const name = document.createElement('span');
+                name.className = 'name';
+                name.textContent = u.modelId + (u.exhausted ? ' (исчерпан)' : '');
+
+                const bar = document.createElement('div');
+                bar.className = 'quota-bar';
+                const fill = document.createElement('div');
+                fill.className = 'quota-fill' + (u.percent >= 100 ? ' full' : (u.percent >= 80 ? ' warn' : ''));
+                fill.style.width = Math.min(100, u.percent) + '%';
+                bar.appendChild(fill);
+
+                const val = document.createElement('span');
+                val.className = 'quota-val';
+                val.textContent = `${usedMln(u.used)} / ${quotaMln(u.quota)}`;
+                val.title = `${u.used.toLocaleString('ru-RU')} из ${u.quota.toLocaleString('ru-RU')} токенов`;
+
+                row.append(name, bar, val);
+                rows.appendChild(row);
+            }
+        }
+
+        // Сверка лимитов с личным кабинетом Сбера — только по нажатию,
+        // без опроса по таймеру
+        async function refreshQuota() {
+            const btn = document.getElementById('quotaRefreshBtn');
+            const status = document.getElementById('quotaSync');
+            btn.disabled = true;
+            btn.classList.add('spinning');
+            status.className = 'quota-sync';
+            status.textContent = 'Запрашиваем баланс у Сбера…';
+
+            try {
+                const res = await fetch('/api/ai-balance/refresh', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': csrfToken }
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+                renderQuota(data.usage || []);
+                const time = new Date(data.syncedAt).toLocaleTimeString('ru-RU');
+                status.className = 'quota-sync ok';
+                status.textContent = `✓ Сверено с личным кабинетом Сбера в ${time}`;
+            } catch (e) {
+                status.className = 'quota-sync fail';
+                status.textContent = 'Не удалось получить баланс: ' + e.message;
+            } finally {
+                btn.disabled = false;
+                btn.classList.remove('spinning');
+            }
+        }
+
         async function deleteGigaChatKey() {
             if (!confirm('Вы уверены, что хотите удалить ключ GigaChat? ИИ-ответы через Сбербанк перестанут работать.')) return;
 
@@ -371,6 +483,7 @@
             document.getElementById('aiModalCancel').addEventListener('click', closeAiModal);
             document.getElementById('saveAiBtn').addEventListener('click', saveAiSettings);
             document.getElementById('deleteKeyBtn').addEventListener('click', deleteGigaChatKey);
+            document.getElementById('quotaRefreshBtn').addEventListener('click', refreshQuota);
         });
     </script>
 </body>

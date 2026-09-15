@@ -1,6 +1,7 @@
 // bot.js
 const { VK, Keyboard } = require('vk-io');
 const { db } = require('./database');
+const { getQueueStats } = require('./ai_worker');
 
 // Логи
 const log = (msg) => console.log(`[Bot] ${msg}`);
@@ -35,8 +36,31 @@ const resolveAttachments = (attachments) => {
     return attachments.map(att => `${att.type}${att.ownerId}_${att.id}${att.accessKey ? '_' + att.accessKey : ''}`);
 };
 
+// Ограничение сообществ для локального запуска.
+// Токены групп хранятся в БД, поэтому локальная копия с базой, где остались
+// продовые сообщества, подключилась бы к ним параллельно с продом и начала
+// перехватывать сообщения студентов. Если ALLOWED_GROUP_IDS задан, бот
+// подключается только к перечисленным группам; если не задан — ко всем (прод).
+function getAllowedGroupIds() {
+    return (process.env.ALLOWED_GROUP_IDS || '')
+        .split(',')
+        .map(id => id.trim())
+        .filter(id => id.length > 0);
+}
+
+function isGroupAllowed(groupId) {
+    const allowed = getAllowedGroupIds();
+    return allowed.length === 0 || allowed.includes(String(groupId));
+}
+
 // Фабричная функция для создания экземпляра бота
 function createBotInstance(token, groupId, groupName) {
+    // Единая точка проверки: сюда приходят и старт при запуске сервера,
+    // и динамическое включение группы из админки
+    if (!isGroupAllowed(groupId)) {
+        throw new Error(`группа не входит в ALLOWED_GROUP_IDS — подключение запрещено (локальный режим)`);
+    }
+
     const vk = new VK({ token });
 
     // Регистрируем обработчик сообщений для этого экземпляра
@@ -479,9 +503,31 @@ async function mainMenu(context, user) {
     }
 }
 
+/** Человекочитаемая оценка ожидания */
+function formatWait(seconds) {
+    if (seconds < 60) return `~${Math.max(5, Math.round(seconds / 5) * 5)} сек`;
+    return `~${Math.ceil(seconds / 60)} мин`;
+}
+
 async function enqueueAiTask(context, user, question, faqContextText, groupId) {
     const senderId = user.vk_id;
     try {
+        // Защита от спама на ВСЕХ путях постановки задачи.
+        // Раньше проверка жила только в состоянии ai_dialogue_mode, а кнопка
+        // «Спросить ИИ» обрабатывается до машины состояний и её обходила —
+        // повторными нажатиями один человек забивал очередь до Circuit Breaker.
+        const inQueue = await db.query(
+            "SELECT id FROM ai_queue WHERE vk_id = $1 AND status IN ('pending', 'processing')",
+            [senderId]
+        );
+        if (inQueue.rows.length > 0) {
+            console.info(`[QUEUE] ${senderId}: новый вопрос отклонён — предыдущий ещё в очереди (задача ${inQueue.rows[0].id})`);
+            return context.send({
+                message: '⏳ Пожалуйста, дождитесь ответа на ваш предыдущий вопрос.',
+                keyboard: Keyboard.builder().textButton({ label: '🏠 В меню (отменить)', color: Keyboard.SECONDARY_COLOR }).oneTime()
+            });
+        }
+
         const countRes = await db.query("SELECT COUNT(*) FROM ai_queue WHERE status = 'pending'");
         const pendingCount = parseInt(countRes.rows[0].count);
 
@@ -497,10 +543,13 @@ async function enqueueAiTask(context, user, question, faqContextText, groupId) {
             return;
         }
 
-        const estimatedMinutes = Math.ceil((pendingCount + 1) / 10);
+        // Оценка по фактической скорости последних ответов, а не по константе
+        // «10 ответов в минуту». Считаем последовательно: у GigaChat для
+        // физлиц доступен всего один поток.
+        const { avgSeconds } = getQueueStats();
         let waitMsg = '🧠 Ваш вопрос передан ИИ-ассистенту.';
         if (pendingCount > 0) {
-            waitMsg += `\nПеред вами в очереди: ${pendingCount}. Примерное время ответа: ~${estimatedMinutes} мин.`;
+            waitMsg += `\nПеред вами в очереди: ${pendingCount}. Примерное время ответа: ${formatWait((pendingCount + 1) * avgSeconds)}.`;
         }
 
         await context.send({
@@ -530,3 +579,5 @@ async function enqueueAiTask(context, user, question, faqContextText, groupId) {
 
 // Экспорт фабричной функции
 module.exports = createBotInstance;
+module.exports.isGroupAllowed = isGroupAllowed;
+module.exports.getAllowedGroupIds = getAllowedGroupIds;

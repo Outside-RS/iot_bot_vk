@@ -74,6 +74,99 @@ function invalidateSettingsCache() {
     settingsCacheTime = 0;
 }
 
+// ==================== Каталог моделей GigaChat ====================
+// Сам каталог и квоты — в ai_models.js. Расход считаем отдельно по каждому
+// классу, а при исчерпании квоты поднимаемся к следующему.
+const { GIGACHAT_MODELS } = require('./ai_models');
+
+function findModel(modelId) {
+    return GIGACHAT_MODELS.find(m => m.id === modelId) || null;
+}
+
+/**
+ * Порядок опроса моделей: сначала выбранная в панели, затем остальные
+ * по иерархии вверх. Классы с исчерпанной квотой пропускаются.
+ */
+async function getGigaChatChain() {
+    const settings = await getSettings();
+    const preferredId = settings.gigachat_model || GIGACHAT_MODELS[0].id;
+
+    let exhausted = new Set();
+    try {
+        const res = await db.query('SELECT model_class FROM ai_usage WHERE exhausted = TRUE');
+        exhausted = new Set(res.rows.map(r => r.model_class));
+    } catch (err) {
+        // Таблицы может не быть до миграции — тогда работаем без учёта квот
+        console.error('[AI] Не удалось прочитать ai_usage:', err.message);
+    }
+
+    const preferred = findModel(preferredId);
+    const ordered = preferred
+        ? [preferred, ...GIGACHAT_MODELS.filter(m => m.id !== preferred.id)]
+        : [...GIGACHAT_MODELS];
+
+    const available = ordered.filter(m => !exhausted.has(m.class));
+
+    // Модель, выбранной в панели, может не быть в каталоге (например новая) —
+    // тогда всё равно пробуем её первой, как указал администратор.
+    if (!preferred && preferredId) {
+        available.unshift({ class: 'custom', id: preferredId, quota: null });
+    }
+    return available;
+}
+
+/** Записывает расход токенов и гасит класс, когда квота выбрана */
+async function recordUsage(modelId, tokens) {
+    const model = findModel(modelId);
+    if (!model || !tokens) return;
+
+    try {
+        const res = await db.query(
+            `UPDATE ai_usage
+                SET tokens_used = tokens_used + $2,
+                    exhausted = (tokens_used + $2) >= quota,
+                    updated_at = NOW()
+              WHERE model_class = $1
+          RETURNING tokens_used, quota, exhausted`,
+            [model.class, tokens]
+        );
+        if (res.rows.length === 0) return;
+
+        const { tokens_used, quota, exhausted } = res.rows[0];
+        const percent = Math.round((Number(tokens_used) / Number(quota)) * 100);
+        if (exhausted) {
+            console.error(`[AI] Квота модели ${modelId} исчерпана (${tokens_used}/${quota}). Переходим к следующей.`);
+        } else if (percent >= 80) {
+            console.error(`[AI] Внимание: у модели ${modelId} израсходовано ${percent}% квоты (${tokens_used}/${quota}).`);
+        }
+    } catch (err) {
+        console.error('[AI] Не удалось записать расход токенов:', err.message);
+    }
+}
+
+/** Помечает класс модели как исчерпанный (когда об этом сообщил сам API) */
+async function markExhausted(modelId) {
+    const model = findModel(modelId);
+    if (!model) return;
+    try {
+        await db.query('UPDATE ai_usage SET exhausted = TRUE, updated_at = NOW() WHERE model_class = $1', [model.class]);
+        console.error(`[AI] Класс ${model.class} (${modelId}) помечен как исчерпанный по ответу API.`);
+    } catch (err) {
+        console.error('[AI] Не удалось пометить класс исчерпанным:', err.message);
+    }
+}
+
+/**
+ * Отличает исчерпание квоты от обычного сбоя.
+ * Точную сигнатуру Сбер в документации не описывает, поэтому смотрим и на код,
+ * и на текст ошибки. При появлении реального ответа список стоит уточнить.
+ */
+function isQuotaError(status, text) {
+    if (status === 402) return true;
+    const t = (text || '').toLowerCase();
+    return /quota|лимит|исчерпан|недостаточно|balance|баланс/.test(t);
+}
+
 // ==================== Системный промпт ====================
 
 function buildSystemPrompt(faqContext) {
@@ -193,7 +286,13 @@ async function askOllama(messages, faqContext) {
         if (!data.message || !data.message.content) {
             throw new Error('Ollama returned empty response');
         }
-        return cleanResponse(data.message.content);
+        // Единый формат ответа для всех провайдеров: воркеру нужны и модель, и расход
+        return {
+            text: cleanResponse(data.message.content),
+            provider: 'Ollama',
+            model: model,
+            tokens: (data.prompt_eval_count || 0) + (data.eval_count || 0)
+        };
     } catch (error) {
         clearTimeout(timeoutId);
         console.error('[AI] Ollama недоступна, вызов fallback:', error.message);
@@ -264,10 +363,71 @@ async function getGigaChatToken() {
     return gigaChatToken;
 }
 
-async function askGigaChat(messages, faqContext) {
+// ==================== Остаток токенов у Сбера ====================
+
+/**
+ * Сверяет учёт токенов с балансом аккаунта у Сбера.
+ *
+ * Зачем: прод и локальная копия тратят ОДНУ квоту аккаунта, а каждая считает
+ * только свой расход. Точная цифра есть только у Сбера — метод
+ * GET /api/v1/balance отдаёт остаток по каждому классу моделей
+ * (проверено: работает и во freemium-режиме).
+ *
+ * Вызывается по кнопке на дашборде, а не по таймеру: баланс нужен человеку,
+ * когда он на него смотрит. Между сверками бот ведёт приблизительный учёт
+ * по полю usage из ответов модели.
+ */
+async function syncBalanceFromGigaChat() {
+    const request = async () => {
+        const token = await getGigaChatToken();
+        return gigaChatFetch('https://gigachat.devices.sberbank.ru/api/v1/balance', {
+            headers: { 'Accept': 'application/json', 'Authorization': `Bearer ${token}` }
+        });
+    };
+
+    let response = await request();
+    if (response.status === 401) {
+        // Токен успел протухнуть — получаем новый и пробуем ещё раз
+        resetGigaChatToken();
+        response = await request();
+    }
+    if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Сбер вернул ${response.status}: ${errText.slice(0, 200)}`);
+    }
+
+    const data = await response.json();
+    const remainingByKey = new Map((data.balance || []).map(b => [b.usage, Number(b.value)]));
+
+    for (const model of GIGACHAT_MODELS) {
+        if (!remainingByKey.has(model.balanceKey)) continue;
+        const remaining = remainingByKey.get(model.balanceKey);
+
+        // Израсходовано = квота − остаток. Если остаток больше известной квоты
+        // (например, куплен пакет), поднимаем квоту до остатка.
+        // Класс снова считается доступным, как только остаток > 0 —
+        // так бот сам «оживает» после ежегодного обновления квоты.
+        await db.query(
+            `UPDATE ai_usage
+                SET quota = GREATEST(quota, $2),
+                    tokens_used = GREATEST(quota, $2) - $2,
+                    exhausted = ($2 <= 0),
+                    updated_at = NOW()
+              WHERE model_class = $1`,
+            [model.class, remaining]
+        );
+    }
+
+    console.log('[AI] Баланс GigaChat сверен со Сбером: ' +
+        GIGACHAT_MODELS.filter(m => remainingByKey.has(m.balanceKey))
+            .map(m => `${m.id} — осталось ${remainingByKey.get(m.balanceKey)}`).join(', '));
+}
+
+async function askGigaChat(messages, faqContext, modelId = null) {
     const settings = await getSettings();
     const token = await getGigaChatToken();
     const preparedMessages = prepareMessages(messages, faqContext);
+    const model = modelId || settings.gigachat_model || GIGACHAT_MODELS[0].id;
 
     const response = await gigaChatFetch('https://gigachat.devices.sberbank.ru/api/v1/chat/completions', {
         method: 'POST',
@@ -277,7 +437,7 @@ async function askGigaChat(messages, faqContext) {
             'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-            model: settings.gigachat_model || 'GigaChat-2',
+            model: model,
             messages: preparedMessages,
             temperature: 0.5,  // Снижена температура для более точных ответов
             max_tokens: 1000,   // Увеличен лимит чтобы ответ точно не обрывался
@@ -293,6 +453,14 @@ async function askGigaChat(messages, faqContext) {
         if (response.status === 401) {
             resetGigaChatToken();
         }
+        // Исчерпание квоты — не сбой: гасим класс модели, чтобы воркер
+        // сразу перешёл к следующему, и помечаем ошибку особым флагом.
+        if (isQuotaError(response.status, errText)) {
+            await markExhausted(model);
+            const quotaErr = new Error(`GigaChat quota exhausted for ${model}: ${errText}`);
+            quotaErr.quotaExhausted = true;
+            throw quotaErr;
+        }
         throw new Error(`GigaChat API error ${response.status}: ${errText}`);
     }
 
@@ -302,12 +470,23 @@ async function askGigaChat(messages, faqContext) {
         throw new Error('GigaChat returned empty response');
     }
 
-    return cleanResponse(data.choices[0].message.content);
+    const tokens = data.usage ? (data.usage.total_tokens || 0) : 0;
+    await recordUsage(model, tokens);
+
+    return {
+        text: cleanResponse(data.choices[0].message.content),
+        provider: 'GigaChat',
+        model: model,
+        tokens: tokens
+    };
 }
 
 module.exports = {
     askOllama,
     askGigaChat,
+    syncBalanceFromGigaChat,
+    GIGACHAT_MODELS,
+    getGigaChatChain,
     resetGigaChatToken,
     invalidateSettingsCache,
     getSettings,

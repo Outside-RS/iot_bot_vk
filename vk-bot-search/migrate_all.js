@@ -36,6 +36,7 @@ async function runMigration() {
             DROP TABLE IF EXISTS operator_codes CASCADE;
             DROP TABLE IF EXISTS vk_groups CASCADE;
             DROP TABLE IF EXISTS ai_queue CASCADE;
+            DROP TABLE IF EXISTS ai_usage CASCADE;
             DROP TABLE IF EXISTS app_settings CASCADE;
         `);
 
@@ -79,9 +80,21 @@ async function runMigration() {
                 faq_context TEXT,
                 status TEXT DEFAULT 'pending',
                 attempts INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                -- момент взятия задачи в работу; по нему ищутся зависшие задачи
+                started_at TIMESTAMP
             );
             CREATE INDEX idx_ai_queue_status ON ai_queue(status);
+
+            -- Расход токенов GigaChat: у каждого класса моделей своя независимая квота
+            CREATE TABLE ai_usage (
+                model_class TEXT PRIMARY KEY,
+                model_id    TEXT NOT NULL,
+                tokens_used BIGINT NOT NULL DEFAULT 0,
+                quota       BIGINT NOT NULL,
+                exhausted   BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
 
             CREATE TABLE faq (
                 id SERIAL PRIMARY KEY,
@@ -161,6 +174,15 @@ async function runMigration() {
             [restoredKey, restoredScope, restoredOllamaUrl, restoredOllamaModel, restoredGigaModel]
         );
         console.log('✅ Настройки ИИ восстановлены' + (savedSettings ? ' из предыдущей БД.' : ' из .env.'));
+
+        // Квоты классов моделей GigaChat (freemium: у каждого класса свой лимит)
+        const { GIGACHAT_MODELS } = require('./ai_models');
+        for (const m of GIGACHAT_MODELS) {
+            await db.query(
+                'INSERT INTO ai_usage (model_class, model_id, quota) VALUES ($1, $2, $3) ON CONFLICT (model_class) DO NOTHING',
+                [m.class, m.id, m.quota]
+            );
+        }
 
         // Тестовый администратор
         await db.query(`

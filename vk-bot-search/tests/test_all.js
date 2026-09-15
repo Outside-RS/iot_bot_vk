@@ -10,7 +10,7 @@
  *  4. Тесты бизнес-логики (Circuit Breaker, EWT, спам-защита)
  */
 
-const { describe, it, before, after } = require('node:test');
+const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 // ═══════════════════════════════════════════════════════
@@ -486,41 +486,68 @@ describe('Бизнес-логика — Zombie cleanup', () => {
         await db.query('DELETE FROM users WHERE vk_id = $1', [TEST_VK_ID]);
     });
 
-    it('Задачи processing > 10 минут возвращаются в pending', async () => {
+    // Запрос-под-тестом: та же логика, что в ai_worker.cleanZombieTasks
+    const ZOMBIE_SQL = `
+        UPDATE ai_queue SET status = 'pending', started_at = NULL
+        WHERE status = 'processing'
+          AND started_at IS NOT NULL
+          AND started_at < NOW() - INTERVAL '10 minutes'
+          AND vk_id = $1
+        RETURNING id
+    `;
+
+    it('Задача, висящая в работе больше 10 минут, возвращается в pending', async () => {
         await db.query(
-            `INSERT INTO ai_queue (vk_id, vk_group_id, ai_context, faq_context, status, created_at)
-             VALUES ($1, 123, '[]', '', 'processing', NOW() - INTERVAL '15 minutes')`,
+            `INSERT INTO ai_queue (vk_id, vk_group_id, ai_context, faq_context, status, created_at, started_at)
+             VALUES ($1, 123, '[]', '', 'processing', NOW() - INTERVAL '20 minutes', NOW() - INTERVAL '15 minutes')`,
             [TEST_VK_ID]
         );
 
-        // Имитируем cleanZombieTasks
-        const result = await db.query(`
-            UPDATE ai_queue SET status = 'pending'
-            WHERE status = 'processing' AND created_at < NOW() - INTERVAL '10 minutes'
-            AND vk_id = $1
-            RETURNING id
-        `, [TEST_VK_ID]);
-
-        assert.ok(result.rowCount > 0, 'Зомби-задача должна вернуться в pending');
+        const result = await db.query(ZOMBIE_SQL, [TEST_VK_ID]);
+        assert.ok(result.rowCount > 0, 'Зависшая задача должна вернуться в pending');
 
         await db.query('DELETE FROM ai_queue WHERE vk_id = $1', [TEST_VK_ID]);
     });
 
-    it('Свежие processing-задачи НЕ затрагиваются', async () => {
+    it('Свежевзятая задача НЕ затрагивается', async () => {
         await db.query(
-            `INSERT INTO ai_queue (vk_id, vk_group_id, ai_context, faq_context, status, created_at)
-             VALUES ($1, 123, '[]', '', 'processing', NOW() - INTERVAL '2 minutes')`,
+            `INSERT INTO ai_queue (vk_id, vk_group_id, ai_context, faq_context, status, created_at, started_at)
+             VALUES ($1, 123, '[]', '', 'processing', NOW() - INTERVAL '5 minutes', NOW() - INTERVAL '2 minutes')`,
             [TEST_VK_ID]
         );
 
-        const result = await db.query(`
-            UPDATE ai_queue SET status = 'pending'
-            WHERE status = 'processing' AND created_at < NOW() - INTERVAL '10 minutes'
-            AND vk_id = $1
-            RETURNING id
-        `, [TEST_VK_ID]);
-
+        const result = await db.query(ZOMBIE_SQL, [TEST_VK_ID]);
         assert.equal(result.rowCount, 0, 'Свежая задача не должна сбрасываться');
+
+        await db.query('DELETE FROM ai_queue WHERE vk_id = $1', [TEST_VK_ID]);
+    });
+
+    // Регрессия на исходный баг: чистильщик смотрел на created_at (время
+    // постановки в очередь). Задача, пролежавшая в длинной очереди дольше
+    // таймаута, сбрасывалась сразу после взятия в работу и обрабатывалась
+    // дважды — студент получал два ответа.
+    it('Долго ждавшая в очереди, но только что взятая задача НЕ сбрасывается', async () => {
+        await db.query(
+            `INSERT INTO ai_queue (vk_id, vk_group_id, ai_context, faq_context, status, created_at, started_at)
+             VALUES ($1, 123, '[]', '', 'processing', NOW() - INTERVAL '45 minutes', NOW() - INTERVAL '10 seconds')`,
+            [TEST_VK_ID]
+        );
+
+        const result = await db.query(ZOMBIE_SQL, [TEST_VK_ID]);
+        assert.equal(result.rowCount, 0, 'Задача в работе 10 секунд не должна считаться зависшей');
+
+        await db.query('DELETE FROM ai_queue WHERE vk_id = $1', [TEST_VK_ID]);
+    });
+
+    it('Задача без started_at (не взятая в работу) не трогается', async () => {
+        await db.query(
+            `INSERT INTO ai_queue (vk_id, vk_group_id, ai_context, faq_context, status, created_at)
+             VALUES ($1, 123, '[]', '', 'pending', NOW() - INTERVAL '30 minutes')`,
+            [TEST_VK_ID]
+        );
+
+        const result = await db.query(ZOMBIE_SQL, [TEST_VK_ID]);
+        assert.equal(result.rowCount, 0);
 
         await db.query('DELETE FROM ai_queue WHERE vk_id = $1', [TEST_VK_ID]);
     });
@@ -641,3 +668,128 @@ describe('app_settings — Singleton-таблица', () => {
         assert.ok(settings.ollama_model);
     });
 });
+
+// ═══════════════════════════════════════════════════════
+// 6. ЛОГИКА ВЫБОРА ПРОВАЙДЕРА (ai_worker.generate)
+//    Провайдеры подменяются заглушками — сеть и модели не нужны
+// ═══════════════════════════════════════════════════════
+
+const worker = require('../ai_worker');
+const { generate, providers, setBusy } = worker._test;
+
+describe('ai_worker — выбор провайдера', () => {
+    const task = { id: 1, ai_context: [{ role: 'user', content: 'вопрос' }], faq_context: '' };
+    const original = { ...providers };
+
+    const stubAnswer = (provider) => async () => ({ text: 'ответ', provider, model: provider, tokens: 100 });
+    const stubFail = (message, extra = {}) => async () => { throw Object.assign(new Error(message), extra); };
+
+    beforeEach(() => {
+        setBusy(false, false);
+        providers.getGigaChatChain = async () => [{ class: 'lite', id: 'GigaChat-2' }];
+        providers.askGigaChat = stubAnswer('GigaChat');
+        providers.askOllama = stubAnswer('Ollama');
+    });
+
+    after(() => {
+        Object.assign(providers, original);
+        setBusy(false, false);
+    });
+
+    it('Основной провайдер — GigaChat, когда он свободен', async () => {
+        let ollamaCalled = false;
+        providers.askOllama = async () => { ollamaCalled = true; return stubAnswer('Ollama')(); };
+
+        const res = await generate(task);
+
+        assert.equal(res.provider, 'GigaChat');
+        assert.equal(ollamaCalled, false, 'Локальная модель не должна вызываться при живом облаке');
+    });
+
+    it('При обычном сбое GigaChat уходим на резервную Ollama', async () => {
+        providers.askGigaChat = stubFail('GigaChat API error 500');
+
+        const res = await generate(task);
+        assert.equal(res.provider, 'Ollama');
+    });
+
+    it('При исчерпании квоты пробуем следующий класс модели, а не резерв', async () => {
+        providers.getGigaChatChain = async () => [
+            { class: 'lite', id: 'GigaChat-2' },
+            { class: 'pro', id: 'GigaChat-2-Pro' }
+        ];
+        const tried = [];
+        providers.askGigaChat = async (ctx, faq, modelId) => {
+            tried.push(modelId);
+            if (modelId === 'GigaChat-2') {
+                throw Object.assign(new Error('quota'), { quotaExhausted: true });
+            }
+            return { text: 'ответ', provider: 'GigaChat', model: modelId, tokens: 50 };
+        };
+
+        const res = await generate(task);
+
+        assert.deepEqual(tried, ['GigaChat-2', 'GigaChat-2-Pro']);
+        assert.equal(res.model, 'GigaChat-2-Pro');
+    });
+
+    it('Когда облачный слот занят, задачу берёт Ollama', async () => {
+        setBusy(true, false);
+
+        const res = await generate(task);
+        assert.equal(res.provider, 'Ollama');
+    });
+
+    // Регрессия на исходный баг: занятость провайдеров считалась сбоем задачи.
+    // Два тика по 3 секунды доводили attempts до 2, и второй человек в очереди
+    // получал «системную ошибку» вместо ответа.
+    it('Когда заняты оба слота — это не сбой задачи, а ожидание', async () => {
+        setBusy(true, true);
+
+        await assert.rejects(
+            () => generate(task),
+            (err) => {
+                assert.equal(err.noCapacity, true, 'Ошибка должна быть помечена как отсутствие свободного слота');
+                return true;
+            }
+        );
+    });
+
+    it('Если все квоты исчерпаны и резерв недоступен — это настоящий сбой', async () => {
+        providers.getGigaChatChain = async () => [];
+        providers.askOllama = stubFail('fetch failed');
+
+        await assert.rejects(
+            () => generate(task),
+            (err) => {
+                assert.ok(!err.noCapacity, 'Это должен быть сбой, а не ожидание слота');
+                return true;
+            }
+        );
+    });
+});
+
+describe('ai_worker — оценка времени ожидания', () => {
+    it('Без замеров используется значение по умолчанию', () => {
+        const stats = worker.getQueueStats();
+        assert.ok(stats.avgSeconds > 0);
+    });
+
+    it('Среднее считается по последним замерам', () => {
+        const { recordDuration, averageDuration } = worker._test;
+        recordDuration(10);
+        recordDuration(20);
+        const avg = averageDuration();
+        assert.ok(avg > 0 && avg < 60, `Ожидали разумное среднее, получили ${avg}`);
+    });
+});
+
+describe('Устойчивость к падению БД', () => {
+    // Регрессия: без обработчика 'error' на пуле остановка PostgreSQL
+    // (код 57P01) завершала процесс бота целиком — «Unhandled 'error' event»
+    it('У пула соединений есть обработчик события error', () => {
+        const { db } = require('../database');
+        assert.ok(db.listenerCount('error') > 0, 'Пул обязан слушать error, иначе обрыв связи с базой роняет процесс');
+    });
+});
+
