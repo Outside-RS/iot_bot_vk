@@ -1,0 +1,28 @@
+# Что НЕ копируется в образ при сборке (COPY . .)
+
+# Секреты: контейнер получает их при запуске через env_file в docker-compose.yml,
+# а вшитые в слой образа они остались бы там навсегда
+.env
+.env.*
+!.env.example
+
+# Туннель: в проде работает в отдельном контейнере frpc
+frpc.exe
+frpc.toml
+
+# Зависимости ставятся внутри образа под Linux (npm ci);
+# локальные собраны под Windows и могут сломать сборку
+node_modules
+npm-debug.log
+
+# Логи и рабочие файлы
+logs
+*.log
+artifacts
+tests
+
+# Служебное
+.git
+.gitignore
+Dockerfile
+docker-compose.yml

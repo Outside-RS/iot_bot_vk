@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const { db } = require('../database');
+const { VK } = require('vk-io');
 const createBotInstance = require('../bot');
 const { parseCommunityName, describeCommunity } = require('../courses');
 
@@ -696,23 +697,25 @@ router.post('/groups/add', requireAuth, noCache, async (req, res) => {
     let { group_id, access_token, group_name } = req.body;
 
     try {
-        // Валидация токена через VK API
-        const response = await fetch(
-            `https://api.vk.com/method/groups.getById?group_id=${group_id}&access_token=${access_token}&v=5.199`
-        );
-        const data = await response.json();
-
-        if (data.error) {
-            const result = await db.query('SELECT * FROM vk_groups ORDER BY created_at DESC');
-            return res.render('groups', {
-                groups: result.rows,
-                error: `❌ Ошибка VK API: ${data.error.error_msg}`,
-                success: null
-            });
+        group_id = String(group_id || '').trim();
+        access_token = String(access_token || '').trim();
+        if (!/^\d+$/.test(group_id)) {
+            return renderGroups(res, { error: '❌ ID группы — это число, например 234189923 (без минуса и букв).' });
         }
 
-        // Автоматически берем название из VK, если не указано
-        const vkName = data.response && data.response.groups && data.response.groups[0] ? data.response.groups[0].name : null;
+        // Проверка токена через VK API. Раньше токен подставлялся прямо в адрес
+        // запроса (…&access_token=…) — такие адреса оседают в логах прокси и
+        // серверов. vk-io передаёт его в теле запроса.
+        let vkName = null;
+        try {
+            const vkRes = await new VK({ token: access_token }).api.groups.getById({ group_id });
+            // В разных версиях API ответ — массив или объект { groups: [...] }
+            const list = Array.isArray(vkRes) ? vkRes : ((vkRes && vkRes.groups) || []);
+            vkName = list[0] ? list[0].name : null;
+        } catch (vkErr) {
+            console.warn(`[ADMIN] Токен группы ${group_id} не принят VK:`, vkErr);
+            return renderGroups(res, { error: `❌ Ошибка VK API: ${vkErr.message}` });
+        }
         if (!group_name && vkName) {
             group_name = vkName;
         } else if (!group_name) {
@@ -833,7 +836,9 @@ router.get('/users', requireAuth, noCache, async (req, res) => {
         let paramIndex = 1;
 
         // Фильтр по курсу (первая цифра после дефиса)
-        if (course) {
+        // Курс — одна цифра. Раньше значение без проверки уходило в регулярное
+        // выражение PostgreSQL (оператор ~), и строка вроде (a+)+$ могла подвесить базу
+        if (/^[1-9]$/.test(course || '')) {
             query += ` AND group_number ~ $${paramIndex}`;
             params.push(`^[А-Яа-яA-Za-z]+-${course}`);
             paramIndex++;
@@ -939,7 +944,9 @@ router.post('/users/promote-all', requireAuth, noCache, async (req, res) => {
         const params = [];
         let paramIndex = 1;
 
-        if (course) {
+        // Курс — одна цифра. Раньше значение без проверки уходило в регулярное
+        // выражение PostgreSQL (оператор ~), и строка вроде (a+)+$ могла подвесить базу
+        if (/^[1-9]$/.test(course || '')) {
             query += ` AND group_number ~ $${paramIndex}`;
             params.push(`^[А-Яа-яA-Za-z]+-${course}`);
             paramIndex++;

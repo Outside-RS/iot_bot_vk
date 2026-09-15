@@ -1,7 +1,19 @@
+// ПОЛНОЕ ПЕРЕСОЗДАНИЕ базы: удаляет ВСЕ таблицы вместе с данными (пользователи,
+// обращения, переписка, база знаний) и создаёт схему заново, загружая FAQ из
+// faq_data.json. Нужен только для чистой установки.
+//
+// Для обновления существующей базы — migrate_update.js: он данные не трогает.
+//
+//   node reset_db.js          — спросит подтверждение
+//   node reset_db.js --yes    — без вопроса (для автоматической установки)
+//
+// Раньше скрипт назывался migrate_all.js и удалял всё без единого вопроса —
+// по названию его легко было принять за безобидную «миграцию».
 require('dotenv').config({ quiet: true });
 const { Client } = require('pg');
 const fs = require('fs');
 const path = require('path');
+const readline = require('readline');
 
 const db = new Client({
     host: process.env.DB_HOST,
@@ -11,9 +23,52 @@ const db = new Client({
     port: process.env.DB_PORT || 5432,
 });
 
+/**
+ * Показывает, КАКАЯ база будет удалена и что в ней лежит, и просит ввести её имя.
+ * Имя, а не «да»: так приходится посмотреть, на какую базу смотрит скрипт, —
+ * и не снести продовую, думая, что это локальная. Имя латиницей, поэтому
+ * ввод не зависит от кодировки терминала.
+ */
+async function confirmReset() {
+    const target = `${process.env.DB_NAME} на ${process.env.DB_HOST}:${process.env.DB_PORT || 5432}`;
+
+    const counts = [];
+    for (const [table, label] of [['users', 'пользователей'], ['tickets', 'обращений'], ['messages', 'сообщений'], ['faq', 'вопросов FAQ']]) {
+        try {
+            const r = await db.query(`SELECT count(*) FROM ${table}`);
+            counts.push(`${label}: ${r.rows[0].count}`);
+        } catch (_) { /* таблицы ещё нет */ }
+    }
+
+    console.log('\n⚠️  ПОЛНОЕ ПЕРЕСОЗДАНИЕ БАЗЫ — все данные будут удалены безвозвратно.');
+    console.log(`   База: ${target}`);
+    console.log(`   Сейчас в ней: ${counts.length ? counts.join(', ') : 'таблиц проекта нет'}`);
+    console.log('   Для обновления существующей базы без потери данных есть migrate_update.js\n');
+
+    if (process.argv.includes('--yes')) {
+        console.log('   Подтверждено флагом --yes.');
+        return true;
+    }
+    if (!process.stdin.isTTY) {
+        console.error('Нет подтверждения: запустите скрипт в терминале или добавьте флаг --yes.');
+        return false;
+    }
+
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise(resolve => rl.question(`Чтобы удалить всё, введите имя базы (${process.env.DB_NAME}): `, resolve));
+    rl.close();
+    return answer.trim() === process.env.DB_NAME;
+}
+
 async function runMigration() {
     try {
         await db.connect();
+
+        if (!(await confirmReset())) {
+            console.log('Отменено — база не изменена.');
+            process.exitCode = 1;
+            return;
+        }
         console.log('Подключение к БД...');
 
         // Включаем расширение для нечеткого поиска (триграммы)
@@ -38,6 +93,7 @@ async function runMigration() {
             DROP TABLE IF EXISTS ai_queue CASCADE;
             DROP TABLE IF EXISTS ai_usage CASCADE;
             DROP TABLE IF EXISTS app_settings CASCADE;
+            DROP TABLE IF EXISTS session CASCADE;
         `);
 
         console.log('Создание новой структуры...');
@@ -157,6 +213,14 @@ async function runMigration() {
             );
             INSERT INTO app_settings (id) VALUES (TRUE) ON CONFLICT DO NOTHING;
 
+            -- Сессии входа в админку (connect-pg-simple): переживают перезапуск бота
+            CREATE TABLE session (
+                sid    VARCHAR PRIMARY KEY,
+                sess   JSON NOT NULL,
+                expire TIMESTAMP(6) NOT NULL
+            );
+            CREATE INDEX idx_session_expire ON session (expire);
+
             CREATE TABLE feedback (
                 id SERIAL PRIMARY KEY,
                 vk_id BIGINT NOT NULL,
@@ -217,10 +281,11 @@ async function runMigration() {
             }
         }
 
-        console.log('ГОТОВО! База обновлена (Opt: NoVectors, NoAnswersInSearch, PgTrgm).');
+        console.log('ГОТОВО! База пересоздана с нуля.');
 
     } catch (err) {
         console.error('Ошибка:', err);
+        process.exitCode = 1;
     } finally {
         await db.end();
     }

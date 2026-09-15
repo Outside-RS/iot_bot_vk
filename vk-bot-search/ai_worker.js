@@ -227,7 +227,14 @@ async function processTask(task) {
     }
 }
 
+// Остановка процесса: новые задачи не берём, а взятые отслеживаем,
+// чтобы дождаться их или вернуть в очередь (см. stopWorker)
+let stopping = false;
+const inFlight = new Set();
+let timers = [];
+
 async function processQueue() {
+    if (stopping) return;
     if (gigaChatBusy && ollamaBusy) {
         return; // Оба слота заняты — за задачей вернёмся следующим тиком
     }
@@ -285,8 +292,10 @@ async function processQueue() {
 
         // Запускаем асинхронно БЕЗ await — но обязательно с перехватом,
         // иначе ошибка внутри самого обработчика ошибок уронит процесс
-        processTask(task)
-            .catch(err => console.error(`[Worker] Необработанная ошибка задачи ${task.id}:`, err.message));
+        const job = processTask(task)
+            .catch(err => console.error(`[Worker] Необработанная ошибка задачи ${task.id}:`, err.message))
+            .finally(() => inFlight.delete(job));
+        inFlight.add(job);
     } catch (err) {
         try {
             await client.query('ROLLBACK');
@@ -324,18 +333,46 @@ async function cleanZombieTasks() {
 
 function startWorker() {
     console.log('[Worker] AI Queue worker запущен (приоритет: GigaChat, резерв: Ollama)');
+    stopping = false;
     // Колбэк setInterval не имеет владельца, который поймает reject,
     // поэтому оборачиваем оба цикла явным catch
-    setInterval(() => {
-        processQueue().catch(err => console.error('[Worker] processQueue:', err.message));
-    }, 3000);
-    setInterval(() => {
-        cleanZombieTasks().catch(err => console.error('[Worker] cleanZombieTasks:', err.message));
-    }, 5 * 60 * 1000);
+    timers = [
+        setInterval(() => {
+            processQueue().catch(err => console.error('[Worker] processQueue:', err.message));
+        }, 3000),
+        setInterval(() => {
+            cleanZombieTasks().catch(err => console.error('[Worker] cleanZombieTasks:', err.message));
+        }, 5 * 60 * 1000)
+    ];
+}
+
+/**
+ * Остановка при выключении бота: новые задачи не берём, взятые ждём
+ * не дольше timeoutMs, а не успевшие возвращаем в очередь. Раньше при
+ * docker stop такая задача висела «в работе» 10 минут до зомби-чистильщика.
+ */
+async function stopWorker(timeoutMs = 5000) {
+    stopping = true;
+    timers.forEach(clearInterval);
+    timers = [];
+
+    if (inFlight.size > 0) {
+        console.info(`[Worker] Остановка: ждём задачи, которые уже в работе (${inFlight.size}), не дольше ${timeoutMs / 1000} с`);
+        await Promise.race([
+            Promise.allSettled([...inFlight]),
+            new Promise(resolve => setTimeout(resolve, timeoutMs))
+        ]);
+    }
+
+    const res = await db.query("UPDATE ai_queue SET status = 'pending', started_at = NULL WHERE status = 'processing' RETURNING id");
+    if (res.rowCount > 0) {
+        console.info(`[Worker] Возвращено в очередь незавершённых задач: ${res.rowCount} — их обработают после перезапуска`);
+    }
 }
 
 module.exports = {
     startWorker,
+    stopWorker,
     getQueueStats,
     // Для тестов: подмена провайдеров и управление слотами занятости
     _test: {

@@ -1346,3 +1346,36 @@ describe('bot — сверка курса студента при сообщен
     });
 });
 
+// ═══════════════════════════════════════════════════════
+// 11. ГИГИЕНА (Этап 7)
+// ═══════════════════════════════════════════════════════
+
+describe('bot — ограничение подбора кода администратора', () => {
+    const { codeLockRemaining, registerCodeFailure, codeAttempts } = require('../bot')._test;
+    const ATTACKER = 'test-attacker';
+
+    it('Четыре ошибки — ещё можно пробовать, пятая — блокировка на 15 минут', () => {
+        codeAttempts.delete(ATTACKER);
+        for (let i = 1; i <= 4; i++) {
+            assert.equal(registerCodeFailure(ATTACKER), i);
+            assert.equal(codeLockRemaining(ATTACKER), 0, `после ${i} ошибок блокировки быть не должно`);
+        }
+        registerCodeFailure(ATTACKER);
+        const lock = codeLockRemaining(ATTACKER);
+        assert.ok(lock > 14 * 60 * 1000 && lock <= 15 * 60 * 1000, `ожидали ~15 минут, получили ${lock} мс`);
+    });
+
+    it('По истечении окна счётчик сбрасывается', () => {
+        codeAttempts.set(ATTACKER, { count: 5, firstAt: Date.now() - 16 * 60 * 1000 });
+        assert.equal(codeLockRemaining(ATTACKER), 0);
+        assert.equal(registerCodeFailure(ATTACKER), 1);
+        codeAttempts.delete(ATTACKER);
+    });
+
+    it('Блокировка у одного пользователя не мешает другим', () => {
+        for (let i = 0; i < 5; i++) registerCodeFailure(ATTACKER);
+        assert.ok(codeLockRemaining(ATTACKER) > 0);
+        assert.equal(codeLockRemaining('someone-else'), 0);
+        codeAttempts.delete(ATTACKER);
+    });
+});

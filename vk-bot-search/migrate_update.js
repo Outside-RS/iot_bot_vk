@@ -5,7 +5,7 @@
 // частично обновлённой. Данные не удаляются.
 //   node migrate_update.js
 //
-// Для чистой установки с нуля — migrate_all.js (он УДАЛЯЕТ все таблицы).
+// Для чистой установки с нуля — reset_db.js (он УДАЛЯЕТ все таблицы).
 require('dotenv').config({ quiet: true });
 const { Client } = require('pg');
 const { GIGACHAT_MODELS } = require('./ai_models');
@@ -72,6 +72,46 @@ const c = new Client({
         const parsed = parseCommunityName(g.group_name);
         await c.query('UPDATE vk_groups SET course = $1, is_archived = $2 WHERE id = $3', [parsed.course, parsed.archived, g.id]);
     }
+
+    // ── Настройки ИИ ───────────────────────────────────────────
+    // Настройки хранятся в базе и меняются в админке. Из .env берутся только
+    // начальные значения — если в базе ключа GigaChat ещё нет (новый сервер).
+    // Раньше этим занимался migrate_settings.js, который заодно печатал ключ
+    // открытым текстом в терминал; здесь ключ не выводится.
+    await c.query(`
+        CREATE TABLE IF NOT EXISTS app_settings (
+            id BOOLEAN PRIMARY KEY DEFAULT TRUE,
+            ollama_url TEXT DEFAULT 'http://127.0.0.1:11434',
+            ollama_model TEXT DEFAULT 'qwen2.5:7b',
+            gigachat_key TEXT,
+            gigachat_scope TEXT DEFAULT 'GIGACHAT_API_PERS',
+            gigachat_model TEXT DEFAULT 'GigaChat-2'
+        )
+    `);
+    await c.query('INSERT INTO app_settings (id) VALUES (TRUE) ON CONFLICT DO NOTHING');
+    if (process.env.GIGACHAT_AUTH_KEY) {
+        const seeded = await c.query(
+            `UPDATE app_settings
+                SET gigachat_key = $1,
+                    gigachat_scope = COALESCE(NULLIF($2, ''), gigachat_scope)
+              WHERE id = TRUE AND (gigachat_key IS NULL OR gigachat_key = '')
+          RETURNING id`,
+            [process.env.GIGACHAT_AUTH_KEY.trim(), process.env.GIGACHAT_SCOPE || '']
+        );
+        if (seeded.rowCount > 0) console.log('Ключ GigaChat перенесён из .env в настройки ИИ (в базе его не было).');
+    }
+
+    // ── Сессии админки ─────────────────────────────────────────
+    // Раньше сессии жили в памяти процесса: любой перезапуск разлогинивал всех.
+    // Схема — как у connect-pg-simple (он создал бы таблицу и сам; здесь — явно).
+    await c.query(`
+        CREATE TABLE IF NOT EXISTS session (
+            sid    VARCHAR PRIMARY KEY,
+            sess   JSON NOT NULL,
+            expire TIMESTAMP(6) NOT NULL
+        )
+    `);
+    await c.query('CREATE INDEX IF NOT EXISTS idx_session_expire ON session (expire)');
 
     // ── Итог ───────────────────────────────────────────────────
     console.log('✅ База обновлена до текущей версии.');

@@ -14,3 +14,6 @@ frpc.toml
 *.pid.lock
 # Логи бота: содержат сообщения студентов
 vk-bot-search/logs/
+# Рабочие заметки, не часть проекта
+Artefacts/
+GW.txt

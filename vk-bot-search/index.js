@@ -75,7 +75,22 @@ if (missingSecrets.length > 0) {
     console.error('[SECURITY] Добавьте их в .env и перезапустите. Запуск прерван.');
     process.exit(1);
 }
+
+// Сессии администраторов хранятся в PostgreSQL (таблица session), а не в памяти
+// процесса. Раньше каждый перезапуск бота — деплой, сбой, docker restart —
+// разлогинивал всех, а хранилище в памяти, по документации express-session,
+// не чистит истёкшие сессии и «не предназначено для продакшена».
+const PgSessionStore = require('connect-pg-simple')(session);
+const sessionStore = new PgSessionStore({
+    pool: db,                     // тот же пул соединений, что у всего приложения
+    tableName: 'session',
+    createTableIfMissing: true,   // таблицу создают и скрипты базы; это страховка
+    pruneSessionInterval: 15 * 60, // истёкшие сессии удаляются раз в 15 минут
+    errorLog: (...args) => console.error('[SESSION]', ...args)
+});
+
 app.use(session({
+    store: sessionStore,
     secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
@@ -182,7 +197,7 @@ async function start() {
         require('./group_sync').scheduleGroupSync();
 
         // Запускаем веб-сервер
-        app.listen(PORT, () => {
+        httpServer = app.listen(PORT, () => {
             console.info(`[APP] Админка доступна: http://localhost:${PORT}`);
             
             // Запуск frpc-туннеля без Docker — ТОЛЬКО по явному флагу.
@@ -198,6 +213,7 @@ async function start() {
             if (process.env.ENABLE_FRPC === 'true' && fs.existsSync(frpcPath)) {
                 console.info('[FRPC] Запускаем проброс портов...');
                 const frp = spawn(frpcPath, ['-c', frpcConfig]);
+                frpProcess = frp;
                 frp.stdout.on('data', data => console.info(`[FRPC] ${data.toString().trim()}`));
                 frp.stderr.on('data', data => console.warn(`[FRPC] ${data.toString().trim()}`));
                 // Без обработчика ошибка запуска (нет файла, нет прав) роняет процесс
@@ -212,5 +228,70 @@ async function start() {
     }
 }
 
-// 10. ЗАПУСК
+// 10. Корректная остановка (docker stop, Ctrl+C, перезапуск)
+// Раньше процесс обрывался на полуслове: задача ИИ, которая была в работе,
+// висела «в работе» 10 минут до зомби-чистильщика, а последние строки лога
+// могли не дописаться в файл. Docker ждёт 10 секунд — укладываемся в 8.
+let httpServer = null;
+let frpProcess = null;
+let shuttingDown = false;
+
+async function shutdown(reason, exitCode = 0) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.info(`[APP] Остановка: ${reason}`);
+
+    const force = setTimeout(() => {
+        console.error('[APP] Не уложились в 8 секунд — завершаем принудительно');
+        process.exit(exitCode || 1);
+    }, 8000);
+    force.unref();
+
+    const step = async (name, fn) => {
+        try { await fn(); } catch (err) { console.error(`[APP] Остановка: ошибка на шаге «${name}»:`, err); }
+    };
+
+    // 1. Админка перестаёт принимать новые запросы
+    await step('веб-сервер', () => new Promise(resolve => {
+        if (!httpServer) return resolve();
+        httpServer.close(() => resolve());
+        httpServer.closeIdleConnections(); // страница логов держит соединение открытым
+    }));
+
+    // 2. Боты отключаются от VK — новые сообщения больше не приходят
+    await step('боты VK', () => Promise.allSettled(Object.values(global.bots || {}).map(bot => bot.updates.stop())));
+
+    // 3. Очередь ИИ: ждём задачи в работе, недоделанные возвращаем в очередь
+    await step('очередь ИИ', () => require('./ai_worker').stopWorker(4000));
+
+    // 4. Плановые задания, чистка сессий и туннель
+    await step('расписание', () => require('node-schedule').gracefulShutdown());
+    await step('сессии', () => sessionStore.close());
+    await step('туннель', () => { if (frpProcess) frpProcess.kill(); });
+
+    // 5. Соединения с базой и запись логов на диск
+    await step('база', () => db.end());
+    console.info('[APP] Остановлено корректно');
+    await step('логи', () => require('./logger').getLogger().close());
+
+    process.exit(exitCode);
+}
+
+process.on('SIGTERM', () => shutdown('получен SIGTERM (docker stop / перезапуск)'));
+process.on('SIGINT', () => shutdown('получен SIGINT (Ctrl+C)'));
+
+// Необработанный отказ промиса — ошибка в коде, но не повод ронять бота
+// для всех студентов: записываем в лог и работаем дальше
+process.on('unhandledRejection', (reason) => {
+    console.error('[APP] Необработанная ошибка в асинхронном коде:', reason instanceof Error ? reason : String(reason));
+});
+
+// Необработанное исключение оставляет процесс в неизвестном состоянии —
+// записываем и перезапускаемся (docker compose поднимет бота: restart: unless-stopped)
+process.on('uncaughtException', (err) => {
+    console.error('[APP] Критическая ошибка, бот будет перезапущен:', err);
+    shutdown('критическая ошибка', 1);
+});
+
+// 11. ЗАПУСК
 start();
