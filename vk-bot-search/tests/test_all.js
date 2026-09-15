@@ -793,3 +793,233 @@ describe('Устойчивость к падению БД', () => {
     });
 });
 
+// ═══════════════════════════════════════════════════════
+// 7. ЗАЩИТА ОТ ВЫДУМАННЫХ ФАКТОВ (fact_guard.js)
+// ═══════════════════════════════════════════════════════
+
+const factGuard = require('../fact_guard');
+
+describe('fact_guard — распознавание контактов', () => {
+    const types = (text) => factGuard.extractFacts(text).map(f => `${f.type}:${f.raw}`);
+
+    it('Почта не дублируется ссылкой на её домен', () => {
+        assert.deepEqual(types('Пишите на m.s.kurochkina@urfu.ru'), ['email:m.s.kurochkina@urfu.ru']);
+    });
+
+    it('Точка в конце предложения не входит в ссылку', () => {
+        assert.deepEqual(types('Справочник: rtf.urfu.ru/ru/kontakty/.'), ['url:rtf.urfu.ru/ru/kontakty/']);
+    });
+
+    it('Телефоны в разных форматах', () => {
+        const t = types('Звоните +7 (343) 375-44-80 или 375-41-99');
+        assert.ok(t.includes('phone:+7 (343) 375-44-80'));
+        assert.ok(t.includes('phone:375-41-99'));
+    });
+
+    it('Аудитории со словом и без', () => {
+        const t = types('Деканат в аудитории Р-219, тьюторы в Р-138А, приём в ауд. 119');
+        assert.ok(t.includes('room:Р-219'));
+        assert.ok(t.includes('room:Р-138А'));
+        assert.ok(t.includes('room:119'));
+    });
+
+    it('Номер группы, даты и годы — не контакты', () => {
+        assert.deepEqual(types('Группа РИ-140944, занятия с 1 сентября 2026 года, стипендия 25-го числа'), []);
+    });
+});
+
+describe('fact_guard — проверка ответа модели', () => {
+    const knowledge = [
+        'Деканат ИРИТ-РТФ: ул. Мира, 32, аудитория Р-219. Специалист — Курочкина Марина Сергеевна, m.s.kurochkina@urfu.ru.',
+        'Справочник сотрудников: rtf.urfu.ru/ru/kontakty/. Портал: urfu.ru/ru/international/. Телефон 375-44-80.'
+    ].join('\n');
+    const known = factGuard.buildKnownFacts(knowledge);
+
+    // Регрессия на реальный случай 04.09.2026
+    it('Выдуманный адрес почты заменяется пометкой', () => {
+        const r = factGuard.guardFacts('Адрес электронной почты деканата ИРИТ-РТФ: dekanat-rtf@urfu.ru.', known);
+        assert.ok(!r.text.includes('dekanat-rtf@urfu.ru'));
+        assert.ok(r.text.includes(factGuard.PLACEHOLDER));
+        assert.ok(r.text.includes(factGuard.NOTE));
+        assert.deepEqual(r.removed, ['dekanat-rtf@urfu.ru']);
+    });
+
+    it('Контакты из базы знаний не трогаются, пояснение не добавляется', () => {
+        const answer = 'Обратитесь к Курочкиной (ауд. Р-219): m.s.kurochkina@urfu.ru, тел. 375-44-80.';
+        const r = factGuard.guardFacts(answer, known);
+        assert.equal(r.text, answer);
+        assert.deepEqual(r.removed, []);
+    });
+
+    it('Выдуманный путь на знакомом домене ловится, голый домен — нет', () => {
+        const r = factGuard.guardFacts('Расписание: rtf.urfu.ru/ru/students/raspisanie, сайт — urfu.ru.', known);
+        assert.deepEqual(r.removed, ['rtf.urfu.ru/ru/students/raspisanie']);
+        assert.ok(r.text.includes('сайт — urfu.ru'));
+    });
+
+    it('Телефон сверяется по местному номеру, в любом формате', () => {
+        const r = factGuard.guardFacts('Звоните +7 (343) 375-44-80 или 375-00-00.', known);
+        assert.deepEqual(r.removed, ['375-00-00']);
+    });
+
+    it('Латинская «P» в номере аудитории считается той же аудиторией', () => {
+        const r = factGuard.guardFacts('Деканат в аудитории P-219.', known);
+        assert.deepEqual(r.removed, []);
+    });
+
+    it('Выдуманная аудитория заменяется', () => {
+        const r = factGuard.guardFacts('Подойдите в ауд. Р-999.', known);
+        assert.deepEqual(r.removed, ['Р-999']);
+    });
+
+    it('Контакт, который написал сам студент, считается проверенным', () => {
+        const withUser = factGuard.buildKnownFacts(knowledge, 'Я уже писал на ivanov@urfu.ru, не отвечают');
+        const r = factGuard.guardFacts('Попробуйте написать на ivanov@urfu.ru ещё раз.', withUser);
+        assert.deepEqual(r.removed, []);
+    });
+});
+
+describe('answer_policy — маршрут к администратору', () => {
+    const { ensureAdminRoute, ADMIN_LINE } = require('../answer_policy');
+
+    // Реальные ответы GigaChat из прогонов контрольных вопросов
+    it('Без контекста дописывает кнопку, даже если модель отправила на сайт', () => {
+        const text = 'Номер телефона ректора отсутствует в базе знаний. Вы можете направить запрос через официальный сайт.';
+        assert.ok(ensureAdminRoute(text, { hadContext: false }).endsWith(ADMIN_LINE));
+    });
+
+    it('С контекстом дописывает, если модель сама признала, что ответа нет', () => {
+        const text = 'Пароли от Wi-Fi регулярно меняются, поэтому я не могу предоставить актуальную информацию.';
+        assert.ok(ensureAdminRoute(text, { hadContext: true }).endsWith(ADMIN_LINE));
+    });
+
+    // Регрессия: шаблон ждал только «нет в базе», а модель написала «в базе знаний нет»
+    it('Понимает обратный порядок слов «в базе знаний нет»', () => {
+        const text = 'Пароли для Wi-Fi периодически меняются, официальной информации по корпусу на улице Мира в базе знаний нет.';
+        assert.ok(ensureAdminRoute(text, { hadContext: true }).endsWith(ADMIN_LINE));
+    });
+
+    it('Нормальный ответ по контексту не трогает', () => {
+        const text = 'Деканат находится по адресу: ул. Мира, 32, аудитория Р-219.';
+        assert.equal(ensureAdminRoute(text, { hadContext: true }), text);
+    });
+
+    it('Не дублирует, если администратор уже упомянут', () => {
+        const text = 'Адреса почты деканата в базе знаний нет. Нажмите «Передать админу».';
+        assert.equal(ensureAdminRoute(text, { hadContext: false }), text);
+    });
+
+    it('Не дописывает к отказу на посторонний запрос', () => {
+        const text = 'Я могу помочь только по вопросам, связанным с университетом.';
+        assert.equal(ensureAdminRoute(text, { hadContext: false }), text);
+    });
+});
+
+// ═══════════════════════════════════════════════════════
+// 8. КОНТЕКСТ ДЛЯ ИИ И ПРОМПТ (Этап 4)
+// ═══════════════════════════════════════════════════════
+
+describe('faq_search — порог контекста для ИИ', () => {
+    const { buildHints, HINT_MIN_SCORE } = require('../faq_search');
+    const row = (id, score) => ({ id, question: `Вопрос ${id}`, answer: `Ответ ${id}`, score });
+
+    // Регрессия: раньше в модель уходили все найденные записи, включая шум
+    it('Записи ниже порога в контекст не попадают', () => {
+        const hints = buildHints([row(1, 0.2), row(2, HINT_MIN_SCORE), row(3, 0.09), row(4, 0.05)]);
+        assert.ok(hints.includes('Вопрос 1'));
+        assert.ok(hints.includes('Вопрос 2'));
+        assert.ok(!hints.includes('Вопрос 3'));
+        assert.ok(!hints.includes('Вопрос 4'));
+    });
+
+    it('Если всё ниже порога — контекст пустой', () => {
+        assert.equal(buildHints([row(1, 0.086), row(2, 0.063)]), '');
+    });
+
+    it('В контекст идёт не больше пяти записей', () => {
+        const hints = buildHints([1, 2, 3, 4, 5, 6, 7].map(i => row(i, 0.3)));
+        assert.equal(hints.split('\n---\n').length, 5);
+    });
+
+    it('Объединение поисков: без дублей, с лучшим score, по убыванию', () => {
+        const { mergeRows } = require('../faq_search');
+        const merged = mergeRows([row(1, 0.12), row(2, 0.3)], [row(1, 0.25), row(3, 0.05)]);
+        assert.deepEqual(merged.map(r => r.id), [2, 1, 3]);
+        assert.equal(merged.find(r => r.id === 1).score, 0.25);
+    });
+});
+
+describe('ai_service — промпт и история (Этап 4)', () => {
+    it('Промпт запрещает составлять контакты по аналогии', () => {
+        const prompt = buildSystemPrompt('Контекст');
+        assert.ok(prompt.includes('Никогда не составляй адрес почты или ссылку по аналогии'));
+        assert.ok(prompt.includes('Сведения об УрФУ из собственной памяти не используй'));
+    });
+
+    it('Без контекста модель отправляет к администратору через кнопку бота', () => {
+        const prompt = buildSystemPrompt('');
+        assert.ok(prompt.includes('Не отвечай по памяти'));
+        assert.ok(prompt.includes('«Передать админу»'));
+    });
+
+    it('С контекстом модель предупреждена, что не все записи относятся к вопросу', () => {
+        assert.ok(buildSystemPrompt('Контекст').includes('Не все они обязательно относятся к вопросу'));
+    });
+
+    it('/no_think уходит только локальной модели', () => {
+        assert.ok(!buildSystemPrompt('', 'gigachat').includes('/no_think'));
+        assert.ok(buildSystemPrompt('', 'ollama').startsWith('/no_think'));
+    });
+
+    it('Напоминание о правилах — только у последнего вопроса', () => {
+        const res = prepareMessages([
+            { role: 'user', content: 'первый' },
+            { role: 'assistant', content: 'ответ' },
+            { role: 'user', content: 'второй' }
+        ], '');
+        assert.ok(!res[1].content.includes('Напоминание'));
+        assert.ok(res[3].content.includes('Напоминание'));
+    });
+
+    it('История не начинается с ответа ассистента без вопроса', () => {
+        const res = prepareMessages([
+            { role: 'assistant', content: 'осиротевший ответ' },
+            { role: 'user', content: 'вопрос' }
+        ], '');
+        assert.equal(res.length, 2);
+        assert.equal(res[1].role, 'user');
+    });
+
+    it('В API уходят только role и content', () => {
+        const res = prepareMessages([
+            { role: 'user', content: 'вопрос' },
+            { role: 'assistant', content: 'ответ', model: 'GigaChat-2' },
+            { role: 'user', content: 'ещё' }
+        ], '');
+        assert.deepEqual(Object.keys(res[2]).sort(), ['content', 'role']);
+    });
+
+    // Реальные артефакты из ответов GigaChat: ВКонтакте их не отображает
+    it('cleanResponse убирает HTML и Markdown, которые VK не отображает', () => {
+        const res = cleanResponse('Стипендия приходит 25-го.<br/>**Важно:** уточните в *бухгалтерии*.\n> Цитата\n### Заголовок');
+        assert.ok(!res.includes('<br'));
+        assert.ok(!res.includes('**'));
+        assert.ok(!res.includes('*бухгалтерии*'));
+        assert.ok(res.includes('бухгалтерии'));
+        assert.ok(!res.includes('> '));
+        assert.ok(!res.includes('###'));
+        assert.ok(res.includes('25-го.\nВажно:'));
+    });
+
+    it('cleanResponse не трогает почту, ссылки и одиночные звёздочки', () => {
+        const input = 'Пишите на m.s.kurochkina@urfu.ru или смотрите rtf.urfu.ru/ru/kontakty/ (оценка 4* и выше).';
+        assert.equal(cleanResponse(input), input);
+    });
+
+    it('cleanResponse сохраняет переводы строк в списках', () => {
+        const res = cleanResponse('Порядок действий:\n1. Напишите заявление.\n2. Отнесите в деканат.');
+        assert.ok(res.includes('\n1. Напишите'));
+        assert.ok(res.includes('\n2. Отнесите'));
+    });
+});
+

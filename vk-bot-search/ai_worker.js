@@ -1,6 +1,9 @@
 require('dotenv').config();
 const { db } = require('./database');
 const { askOllama, askGigaChat, getGigaChatChain } = require('./ai_service');
+const { buildKnownFacts, guardFacts } = require('./fact_guard');
+const { ensureAdminRoute } = require('./answer_policy');
+const { getAllFaqText } = require('./faq_search');
 const { Keyboard } = require('vk-io');
 
 // Слоты параллелизма.
@@ -97,6 +100,33 @@ async function generate(task) {
     throw busy;
 }
 
+/**
+ * Сверяет контакты в ответе (почта, ссылки, телефоны, аудитории) с проверенными
+ * источниками: всей базой знаний, переданным модели контекстом и сообщениями
+ * самого студента. Неподтверждённые заменяются пометкой — см. fact_guard.js.
+ */
+async function verifyFacts(task, text) {
+    let faqText = '';
+    try {
+        faqText = await getAllFaqText();
+    } catch (err) {
+        // Без полной базы сверяем хотя бы с переданным контекстом — строже, но безопасно
+        console.error('[FACTS] Не удалось загрузить базу знаний для сверки:', err.message);
+    }
+
+    const userMessages = (task.ai_context || [])
+        .filter(m => m.role === 'user')
+        .map(m => m.content);
+
+    const known = buildKnownFacts(faqText, task.faq_context || '', ...userMessages);
+    const { text: guarded, removed } = guardFacts(text, known);
+
+    if (removed.length > 0) {
+        console.log(`[FACTS] Задача ${task.id}: заменены контакты, которых нет в базе знаний: ${removed.join(', ')}`);
+    }
+    return guarded;
+}
+
 /** Возврат задачи в очередь без списания попытки */
 async function requeue(taskId, reason) {
     console.log(`[Worker] Задача ${taskId} возвращена в очередь: ${reason}`);
@@ -160,6 +190,9 @@ async function processTask(task) {
     const elapsed = (Date.now() - startedAt) / 1000;
     recordDuration(elapsed);
     console.log(`[Worker] ${result.provider} (${result.model}) ответил за ${elapsed.toFixed(1)}с, токенов: ${result.tokens}`);
+
+    result.text = await verifyFacts(task, result.text);
+    result.text = ensureAdminRoute(result.text, { hadContext: Boolean(task.faq_context && task.faq_context.trim()) });
 
     try {
         const bot = global.bots && global.bots[task.vk_group_id];

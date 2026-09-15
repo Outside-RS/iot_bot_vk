@@ -2,6 +2,7 @@
 const { VK, Keyboard } = require('vk-io');
 const { db } = require('./database');
 const { getQueueStats } = require('./ai_worker');
+const { searchFaq, buildDialogHints, DIRECT_MIN_SCORE } = require('./faq_search');
 
 // Логи
 const log = (msg) => console.log(`[Bot] ${msg}`);
@@ -196,21 +197,11 @@ async function handleMessage(context, vk, groupId) {
                 if (!localUser) return;
 
                 const qText = messagePayload.question || text || "Вопрос для ИИ";
-                const sqlQuery = `
-                    SELECT id, question, answer,
-                        (ts_rank(search_vector, to_tsquery('russian', regexp_replace(plainto_tsquery('russian', $1)::text, '&', '|', 'g'))) * 1.0 +
-                         similarity(question || ' ' || COALESCE(keywords, ''), $1) * 0.5) AS score
-                    FROM faq
-                    WHERE search_vector @@ to_tsquery('russian', regexp_replace(plainto_tsquery('russian', $1)::text, '&', '|', 'g'))
-                       OR similarity(question || ' ' || COALESCE(keywords, ''), $1) > 0.1
-                    ORDER BY score DESC
-                    LIMIT 5;
-                `;
                 try {
-                    const res = await db.query(sqlQuery, [qText]);
-                    const faqHints = res.rows.map(r => `Вопрос: ${r.question}\nОтвет: ${r.answer}`).join('\n---\n');
+                    const faqHints = await buildDialogHints(qText, await searchFaq(qText, 8), localUser.ai_context);
                     await enqueueAiTask(context, localUser, qText, faqHints, groupId);
                 } catch (e) {
+                    console.error('[SEARCH] Ошибка поиска для кнопки ИИ:', e.message);
                     await enqueueAiTask(context, localUser, qText, '', groupId);
                 }
                 return;
@@ -305,27 +296,13 @@ async function processState(context, user, vk, groupId) {
             const safeText = text || '';
             console.log(`[SEARCH] Запрос от ${senderId} (${safeText.length} символов): "${safeText}"`);
 
-            // 1. ЕДИНЫЙ ПОИСК (Лексика + Нечеткий)
-            // - plainto_tsquery('russian', text) -> превращает "где получить" в "где & получить"
-            // - regexp_replace(..., '&', '|', 'g') -> превращает "где & получить" в "где | получить" (ИЛИ)
-            // - similarity(..., text) -> сравнивает триграммы (опечатки)
-            // - ts_rank -> ранжирует по частоте слов
-            const sqlQuery = `
-                SELECT id, question, answer,
-                    (ts_rank(search_vector, to_tsquery('russian', regexp_replace(plainto_tsquery('russian', $1)::text, '&', '|', 'g'))) * 1.0 +
-                     similarity(question || ' ' || COALESCE(keywords, ''), $1) * 0.5) AS score
-                FROM faq
-                WHERE search_vector @@ to_tsquery('russian', regexp_replace(plainto_tsquery('russian', $1)::text, '&', '|', 'g'))
-                   OR similarity(question || ' ' || COALESCE(keywords, ''), $1) > 0.1
-                ORDER BY score DESC
-                LIMIT 8;
-            `;
-
+            // 1. ЕДИНЫЙ ПОИСК (лексика + нечёткий) — см. faq_search.js
+            // Сам запрос и вклад лексики/триграмм пишет searchFaq (уровень DEBUG)
             try {
-                const res = await db.query(sqlQuery, [safeText]);
+                const rows = await searchFaq(safeText, 8);
 
-                // Фильтруем мусор: порог 0.15 отсекает шумовые совпадения (score < 0.1)
-                const hits = res.rows.filter(r => r.score > 0.15);
+                // Уверенные совпадения показываем сразу, без ИИ
+                const hits = rows.filter(r => r.score > DIRECT_MIN_SCORE);
 
                 if (hits.length > 0) {
                     console.log(`[SEARCH] Found ${hits.length} results. Top: "${hits[0].question}" (${hits[0].score})`);
@@ -374,18 +351,13 @@ async function processState(context, user, vk, groupId) {
                     return;
                 }
 
-                // FAQ не нашёл уверенного ответа, но если есть хоть какие-то результаты —
-                // передаём их как контекст для ИИ, чтобы он ответил на основе данных вуза
-                const faqHints = res.rows.slice(0, 5)
-                    .map(r => `Вопрос: ${r.question}\nОтвет: ${r.answer}`)
-                    .join('\n---\n');
+                // Уверенного ответа нет — передаём ИИ как контекст только записи выше
+                // порога. Шум ниже порога не передаём: на нём модель и выдумывала факты.
+                // Для уточняющего вопроса в диалоге ищем ещё и по предыдущему вопросу
+                const faqHints = await buildDialogHints(safeText, rows, user.ai_context);
+                const hintCount = faqHints ? faqHints.split('\n---\n').length : 0;
 
-                if (faqHints) {
-                    console.log(`[SEARCH] Точных совпадений нет, но найдено ${res.rows.length} подсказок для ИИ.`);
-                } else {
-                    console.log('[SEARCH] Ничего не найдено.');
-                }
-                console.log('[SEARCH] Передаем вопрос ИИ.');
+                console.info(`[SEARCH] Решение для ${senderId}: уверенного ответа в базе нет (лучший score ${rows[0] ? rows[0].score.toFixed(3) : '—'}) → вопрос уходит ИИ, ${hintCount > 0 ? `подсказок из базы: ${hintCount}` : 'без контекста — все совпадения ниже порога'}`);
                 await enqueueAiTask(context, user, text, faqHints, groupId);
             } catch (err) {
                 console.error('[SEARCH] Error:', err);
