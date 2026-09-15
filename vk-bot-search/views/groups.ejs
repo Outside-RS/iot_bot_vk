@@ -6,6 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Группы VK — Админ-панель</title>
     <link rel="stylesheet" href="/css/admin.css">
+    <style>
+        .sync-bar { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 18px 0 10px; flex-wrap: wrap; }
+        .sync-hint { font-size: 13px; opacity: .7; max-width: 720px; line-height: 1.45; }
+        .sync-time { font-size: 11px; opacity: .55; margin-top: 3px; white-space: nowrap; }
+        .muted { opacity: .55; }
+    </style>
 </head>
 
 <body>
@@ -64,6 +70,15 @@
                             </form>
                         </div>
 
+                        <!-- Сверка названий с VK: курс берётся из названия сообщества -->
+                        <div class="sync-bar">
+                            <span class="sync-hint">Курс берётся из названия сообщества. Бот сверяет названия сам 1 августа и 1 сентября; при переименовании «Второй курс…» → «Третий курс…» студенты переводятся автоматически.</span>
+                            <form action="/groups/sync-all" method="POST">
+                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                <button type="submit" class="btn btn-sm">↻ Сверить все с VK</button>
+                            </form>
+                        </div>
+
                         <!-- Таблица групп -->
                         <div class="table-container">
                             <table>
@@ -71,6 +86,7 @@
                                     <tr>
                                         <th>ID группы</th>
                                         <th>Название</th>
+                                        <th>Курс</th>
                                         <th>Токен</th>
                                         <th>Статус</th>
                                         <th>Действия</th>
@@ -79,7 +95,7 @@
                                 <tbody>
                                     <% if (groups.length===0) { %>
                                         <tr>
-                                            <td colspan="5" class="empty-state">
+                                            <td colspan="6" class="empty-state">
                                                 <div class="icon">📭</div>
                                                 Нет подключенных групп
                                             </td>
@@ -93,6 +109,18 @@
                                                     <td>
                                                         <%= g.group_name %>
                                                     </td>
+                                                    <td>
+                                                        <% if (g.is_archived) { %>
+                                                            <span class="badge badge-warning">архив</span>
+                                                        <% } else if (g.course) { %>
+                                                            <strong><%= g.course %> курс</strong>
+                                                        <% } else { %>
+                                                            <span class="muted">не определён</span>
+                                                        <% } %>
+                                                        <div class="sync-time">
+                                                            <%= g.name_synced_at ? 'сверено ' + new Date(g.name_synced_at).toLocaleString('ru-RU', { timeZone: 'Asia/Yekaterinburg', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'ещё не сверялось с VK' %>
+                                                        </div>
+                                                    </td>
                                                     <td class="token-hidden">
                                                         <%= g.access_token.substring(0, 15) %>...
                                                     </td>
@@ -103,6 +131,11 @@
                                                         </span>
                                                     </td>
                                                     <td class="actions">
+                                                        <form action="/groups/sync/<%= g.id %>" method="POST"
+                                                            style="display:inline;">
+                                                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                                            <button type="submit" class="btn btn-sm" title="Сверить название и курс с VK">↻</button>
+                                                        </form>
                                                         <form action="/groups/toggle/<%= g.id %>" method="POST"
                                                             style="display:inline;">
                                                             <input type="hidden" name="_csrf" value="<%= csrfToken %>">

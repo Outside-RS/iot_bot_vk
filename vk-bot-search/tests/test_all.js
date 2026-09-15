@@ -1145,3 +1145,204 @@ describe('database — распознавание обрыва связи', () =
     });
 });
 
+// ═══════════════════════════════════════════════════════
+// 10. КУРС ПО НАЗВАНИЮ СООБЩЕСТВА (Этап 6)
+// ═══════════════════════════════════════════════════════
+
+describe('courses — разбор названий сообществ', () => {
+    const { parseCommunityName, courseOfGroup, withCourse } = require('../courses');
+
+    // Реальные названия сообществ, сентябрь 2026
+    it('Все четыре настоящих названия', () => {
+        assert.deepEqual(parseCommunityName('Первый курс ИРИТ-РТФ УрФУ'), { course: 1, archived: false });
+        assert.deepEqual(parseCommunityName('Второй курс Бакалавриат ИРИТ УрФУ'), { course: 2, archived: false });
+        assert.deepEqual(parseCommunityName('Третий курс ИОТ ИРИТ УрФУ'), { course: 3, archived: false });
+        assert.deepEqual(parseCommunityName('Четвертый курс ИОТ ИРИТ-РТФ УрФУ'), { course: 4, archived: false });
+    });
+
+    it('Архив после выпуска распознаётся, хотя слово «Четвертый» в названии осталось', () => {
+        assert.deepEqual(parseCommunityName('Четвертый курс ИОТ, УрФУ - Архив 25/26'), { course: 4, archived: true });
+    });
+
+    it('Год выпуска в названии архива на распознавание не влияет', () => {
+        assert.equal(parseCommunityName('Четвертый курс ИОТ, УрФУ - Архив 26/27').archived, true);
+        assert.equal(parseCommunityName('Четвертый курс ИОТ, УрФУ - Архив 31/32').archived, true);
+    });
+
+    it('«Четвёртый» через ё и курс цифрой', () => {
+        assert.equal(parseCommunityName('Четвёртый курс ИОТ').course, 4);
+        assert.equal(parseCommunityName('2 курс ИОТ').course, 2);
+        assert.equal(parseCommunityName('2-й курс ИОТ').course, 2);
+    });
+
+    it('Названия без курса — курс не определён', () => {
+        assert.equal(parseCommunityName('bot-IOT-test').course, null);
+        assert.equal(parseCommunityName('Курс молодого бойца').course, null);
+        assert.equal(parseCommunityName('Пятый курс').course, null); // бакалавриат — 4 года
+    });
+
+    it('Курс из номера группы и замена курса', () => {
+        assert.equal(courseOfGroup('РИ-240944'), 2);
+        assert.equal(courseOfGroup('ерунда'), null);
+        assert.equal(withCourse('РИ-140944', 2), 'РИ-240944');
+        assert.equal(withCourse('РИ-240944', 2), 'РИ-240944'); // повтор ничего не ломает
+    });
+});
+
+describe('group_sync — что делать при смене названия', () => {
+    const { decideAction } = require('../group_sync')._test;
+    const s = (course, archived = false) => ({ course, archived });
+
+    it('Курс вырос на единицу — перевод', () => assert.equal(decideAction(s(2), s(3)), 'promote'));
+    it('Ушло в архив — выпуск', () => assert.equal(decideAction(s(4), s(4, true)), 'graduate'));
+    it('Сменилось только название — ничего', () => assert.equal(decideAction(s(2), s(2)), 'none'));
+    it('Курс определён впервые — ничего, это точка отсчёта', () => assert.equal(decideAction(s(null), s(2)), 'none'));
+    it('Курс назад или через курс — студентов не трогаем', () => {
+        assert.equal(decideAction(s(3), s(1)), 'anomaly');
+        assert.equal(decideAction(s(1), s(3)), 'anomaly');
+    });
+    it('Повторная сверка архива — ничего', () => assert.equal(decideAction(s(4, true), s(4, true)), 'none'));
+    it('Архив снова стал курсовым сообществом — новая точка отсчёта', () => assert.equal(decideAction(s(4, true), s(1)), 'reopen'));
+});
+
+describe('group_sync — перевод студентов в базе', () => {
+    const { syncGroup } = require('../group_sync');
+    const G = 999000001;       // сообщество, которое переименуют
+    const OTHER = 999000002;   // чужое сообщество
+    const ids = [99999980, 99999981, 99999982, 99999983, 99999984];
+
+    const nameIs = (name) => async () => name;
+    const group = async () => (await db.query('SELECT * FROM vk_groups WHERE group_id = $1', [G])).rows[0];
+    const userGroup = async (vkId) => (await db.query('SELECT group_number, is_graduated FROM users WHERE vk_id = $1', [vkId])).rows[0];
+
+    async function setup(name, course, archived = false) {
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [ids]);
+        await db.query('DELETE FROM vk_groups WHERE group_id = ANY($1)', [[G, OTHER]]);
+        await db.query("INSERT INTO vk_groups (group_id, group_name, access_token, course, is_archived) VALUES ($1, $2, 'test', $3, $4)", [G, name, course, archived]);
+        await db.query(`INSERT INTO users (vk_id, role, group_number, vk_group_id, is_graduated, state) VALUES
+            ($1, 'student',  'РИ-240944', $6, FALSE, 'main_menu'),  -- обычный студент потока
+            ($2, 'student',  'РИ-340944', $6, FALSE, 'main_menu'),  -- уже указал новый курс
+            ($3, 'student',  'РИ-240944', $7, FALSE, 'main_menu'),  -- из другого сообщества
+            ($4, 'operator', 'РИ-240944', $6, FALSE, 'main_menu'),  -- администратор
+            ($5, 'student',  'РИ-240944', $6, TRUE,  'main_menu')   -- уже выпускник`,
+            [...ids, G, OTHER]);
+    }
+
+    after(async () => {
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [ids]);
+        await db.query('DELETE FROM vk_groups WHERE group_id = ANY($1)', [[G, OTHER]]);
+    });
+
+    it('Переименование «Второй» → «Третий» переводит только студентов этого сообщества', async () => {
+        await setup('Второй курс ИОТ ИРИТ УрФУ', 2);
+        const r = await syncGroup(await group(), { fetchName: nameIs('Третий курс ИОТ ИРИТ УрФУ') });
+
+        assert.equal(r.action, 'promote');
+        assert.equal(r.changed, 1, 'переведён должен быть ровно один — обычный студент потока');
+        assert.equal((await userGroup(ids[0])).group_number, 'РИ-340944');
+        assert.equal((await userGroup(ids[1])).group_number, 'РИ-340944'); // не уехал на 4 курс
+        assert.equal((await userGroup(ids[2])).group_number, 'РИ-240944'); // чужое сообщество
+        assert.equal((await userGroup(ids[3])).group_number, 'РИ-240944'); // администратор
+        assert.equal((await userGroup(ids[4])).group_number, 'РИ-240944'); // выпускник
+
+        const g = await group();
+        assert.equal(g.course, 3);
+        assert.equal(g.group_name, 'Третий курс ИОТ ИРИТ УрФУ');
+        assert.ok(g.name_synced_at);
+    });
+
+    it('Повторная сверка того же названия ничего не меняет', async () => {
+        const r = await syncGroup(await group(), { fetchName: nameIs('Третий курс ИОТ ИРИТ УрФУ') });
+        assert.equal(r.action, 'none');
+        assert.equal((await userGroup(ids[0])).group_number, 'РИ-340944');
+    });
+
+    it('Уход в архив выпускает студентов сообщества', async () => {
+        await setup('Четвертый курс ИОТ ИРИТ-РТФ УрФУ', 4);
+        const r = await syncGroup(await group(), { fetchName: nameIs('Четвертый курс ИОТ, УрФУ - Архив 25/26') });
+        assert.equal(r.action, 'graduate');
+        assert.equal((await userGroup(ids[0])).is_graduated, true);
+        assert.equal((await userGroup(ids[2])).is_graduated, false); // чужое сообщество
+        assert.equal((await group()).is_archived, true);
+    });
+
+    it('Смена только названия (как с «Бакалавриат») — название обновлено, студенты на месте', async () => {
+        await setup('Второй курс ИРИТ УрФУ', 2);
+        const r = await syncGroup(await group(), { fetchName: nameIs('Второй курс Бакалавриат ИРИТ УрФУ') });
+        assert.equal(r.action, 'none');
+        assert.equal((await group()).group_name, 'Второй курс Бакалавриат ИРИТ УрФУ');
+        assert.equal((await userGroup(ids[0])).group_number, 'РИ-240944');
+    });
+
+    it('Необычная смена курса (3 → 1) — студенты не тронуты, курс сообщества прежний', async () => {
+        await setup('Третий курс ИОТ ИРИТ УрФУ', 3);
+        const r = await syncGroup(await group(), { fetchName: nameIs('Первый курс ИРИТ-РТФ УрФУ') });
+        assert.equal(r.action, 'anomaly');
+        assert.equal((await userGroup(ids[0])).group_number, 'РИ-240944');
+        // Регрессия: иначе проверка при сообщениях «исправила» бы студентов на 1 курс
+        assert.equal((await group()).course, 3);
+        assert.equal((await group()).group_name, 'Первый курс ИРИТ-РТФ УрФУ');
+    });
+});
+
+describe('bot — сверка курса студента при сообщении', () => {
+    const { reconcileStudentCourse, checkGroupAgainstCommunity } = require('../bot')._test;
+    const G2 = 999000011;   // сообщество 2 курса
+    const TEST = 999000012; // сообщество без курса (как тестовое)
+    const STUDENT = 99999990;
+
+    const sent = [];
+    const ctx = { send: async (m) => { sent.push(m); } };
+
+    before(async () => {
+        await db.query('DELETE FROM vk_groups WHERE group_id = ANY($1)', [[G2, TEST]]);
+        await db.query("INSERT INTO vk_groups (group_id, group_name, access_token, course) VALUES ($1, 'Второй курс ИОТ', 't', 2), ($2, 'bot-IOT-test', 't', NULL)", [G2, TEST]);
+    });
+    after(async () => {
+        await db.query('DELETE FROM users WHERE vk_id = $1', [STUDENT]);
+        await db.query('DELETE FROM vk_groups WHERE group_id = ANY($1)', [[G2, TEST]]);
+    });
+    const makeStudent = async (groupNumber, vkGroupId = null) => {
+        await db.query('DELETE FROM users WHERE vk_id = $1', [STUDENT]);
+        await db.query("INSERT INTO users (vk_id, role, group_number, vk_group_id, state) VALUES ($1, 'student', $2, $3, 'main_menu')", [STUDENT, groupNumber, vkGroupId]);
+        return (await db.query('SELECT * FROM users WHERE vk_id = $1', [STUDENT])).rows[0];
+    };
+
+    // Регрессия: студентов не перевели летом 2026 (cron не был подключён)
+    it('Устаревший номер группы исправляется по сообществу, студенту приходит пояснение', async () => {
+        sent.length = 0;
+        const user = await makeStudent('РИ-140944', null);
+        const updated = await reconcileStudentCourse(ctx, user, G2);
+
+        assert.equal(updated.group_number, 'РИ-240944');
+        const row = (await db.query('SELECT group_number, vk_group_id FROM users WHERE vk_id = $1', [STUDENT])).rows[0];
+        assert.equal(row.group_number, 'РИ-240944');
+        assert.equal(String(row.vk_group_id), String(G2), 'сообщество должно запомниться');
+        assert.equal(sent.length, 1);
+        assert.ok(String(sent[0]).includes('РИ-140944 → РИ-240944'));
+    });
+
+    it('Сообщение из чужого сообщества данные не меняет', async () => {
+        sent.length = 0;
+        const user = await makeStudent('РИ-340944', TEST);
+        const updated = await reconcileStudentCourse(ctx, user, G2);
+        assert.equal(updated.group_number, 'РИ-340944');
+        assert.equal(sent.length, 0);
+    });
+
+    it('В сообществе без курса ничего не исправляется', async () => {
+        sent.length = 0;
+        const user = await makeStudent('РИ-140944', null);
+        const updated = await reconcileStudentCourse(ctx, user, TEST);
+        assert.equal(updated.group_number, 'РИ-140944');
+        assert.equal(sent.length, 0);
+    });
+
+    it('Проверка при регистрации: номер группы против курса сообщества', async () => {
+        assert.equal(await checkGroupAgainstCommunity('РИ-240944', G2), null);
+        const refusal = await checkGroupAgainstCommunity('РИ-340944', G2);
+        assert.ok(refusal && refusal.includes('2 курса') && refusal.includes('3 курс'), refusal);
+        assert.equal(await checkGroupAgainstCommunity('РИ-340944', TEST), null); // курс неизвестен — не проверяем
+    });
+});
+

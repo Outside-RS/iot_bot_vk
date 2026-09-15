@@ -178,6 +178,9 @@ async function start() {
         const { startWorker } = require('./ai_worker');
         startWorker();
 
+        // Плановая сверка названий сообществ и перевод курса (1 августа и 1 сентября)
+        require('./group_sync').scheduleGroupSync();
+
         // Запускаем веб-сервер
         app.listen(PORT, () => {
             console.info(`[APP] Админка доступна: http://localhost:${PORT}`);

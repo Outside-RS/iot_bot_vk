@@ -4,6 +4,7 @@ const router = express.Router();
 const rateLimit = require('express-rate-limit');
 const { db } = require('../database');
 const createBotInstance = require('../bot');
+const { parseCommunityName, describeCommunity } = require('../courses');
 
 const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -643,6 +644,53 @@ router.get('/groups', requireAuth, noCache, async (req, res) => {
     }
 });
 
+// Итог сверки одного сообщества — человеческим языком для плашки на странице
+function describeSyncResult(r) {
+    if (r.error) return `«${r.oldName}»: не удалось сверить — ${r.error}`;
+    const renamed = r.newName !== r.oldName ? `«${r.oldName}» → «${r.newName}»` : `«${r.newName}»`;
+    switch (r.action) {
+        case 'promote': return `${renamed}: курс ${r.before.course} → ${r.after.course}, переведено студентов: ${r.changed}`;
+        case 'graduate': return `${renamed}: ушло в архив, выпущено студентов: ${r.changed}`;
+        case 'anomaly': return `${renamed}: необычная смена курса ${r.before.course} → ${r.after.course} — похоже на опечатку. Студенты не переведены, в боте оставлен ${r.before.course} курс. Исправьте название в VK и нажмите ↻`;
+        case 'reopen': return `${renamed}: сообщество вернулось из архива, теперь ${describeCommunity(r.after)}`;
+        default: return `${renamed}: ${describeCommunity(r.after)}${r.newName !== r.oldName ? ', название обновлено' : ', без изменений'}`;
+    }
+}
+
+async function renderGroups(res, { error = null, success = null } = {}) {
+    const result = await db.query('SELECT * FROM vk_groups ORDER BY created_at DESC');
+    res.render('groups', { groups: result.rows, error, success });
+}
+
+// Сверить одно сообщество с VK (кнопка ↻ в строке)
+router.post('/groups/sync/:id', requireAuth, noCache, async (req, res) => {
+    try {
+        const g = await db.query('SELECT * FROM vk_groups WHERE id = $1', [req.params.id]);
+        if (g.rows.length === 0) return renderGroups(res, { error: 'Сообщество не найдено.' });
+        const { syncGroup } = require('../group_sync');
+        const r = await syncGroup(g.rows[0]);
+        const text = describeSyncResult(r);
+        await renderGroups(res, r.action === 'anomaly' ? { error: text } : { success: text });
+    } catch (e) {
+        console.error('[GROUPS] Ручная сверка не удалась:', e);
+        await renderGroups(res, { error: `Не удалось сверить с VK: ${e.message}` }).catch(() => res.status(500).send('Внутренняя ошибка сервера.'));
+    }
+});
+
+// Сверить все сообщества разом
+router.post('/groups/sync-all', requireAuth, noCache, async (req, res) => {
+    try {
+        const { syncAllGroups } = require('../group_sync');
+        const results = await syncAllGroups('вручную из админки');
+        const problems = results.filter(r => r.error || r.action === 'anomaly');
+        const text = results.map(describeSyncResult).join(' · ');
+        await renderGroups(res, problems.length ? { error: text } : { success: text || 'Сообществ нет.' });
+    } catch (e) {
+        console.error('[GROUPS] Ручная сверка всех сообществ не удалась:', e);
+        await renderGroups(res, { error: `Не удалось сверить с VK: ${e.message}` }).catch(() => res.status(500).send('Внутренняя ошибка сервера.'));
+    }
+});
+
 // Добавить группу
 router.post('/groups/add', requireAuth, noCache, async (req, res) => {
     let { group_id, access_token, group_name } = req.body;
@@ -664,16 +712,22 @@ router.post('/groups/add', requireAuth, noCache, async (req, res) => {
         }
 
         // Автоматически берем название из VK, если не указано
-        if (!group_name && data.response && data.response.groups && data.response.groups[0]) {
-            group_name = data.response.groups[0].name;
+        const vkName = data.response && data.response.groups && data.response.groups[0] ? data.response.groups[0].name : null;
+        if (!group_name && vkName) {
+            group_name = vkName;
         } else if (!group_name) {
             group_name = `Группа ${group_id}`;
         }
 
+        // Курс — из настоящего названия в VK, даже если в форме ввели своё:
+        // по нему потом проверяется номер группы при регистрации и переводится курс
+        const community = parseCommunityName(vkName || group_name);
         await db.query(
-            'INSERT INTO vk_groups (group_id, group_name, access_token) VALUES ($1, $2, $3)',
-            [group_id, group_name, access_token]
+            `INSERT INTO vk_groups (group_id, group_name, access_token, course, is_archived, name_synced_at)
+             VALUES ($1, $2, $3, $4, $5, ${vkName ? 'NOW()' : 'NULL'})`,
+            [group_id, group_name, access_token, community.course, community.archived]
         );
+        console.info(`[GROUPS] Добавлено сообщество «${group_name}» (ID ${group_id}): ${describeCommunity(community)}`);
 
         // Динамически запускаем бота сразу (без перезапуска сервера)
         let startError = null;

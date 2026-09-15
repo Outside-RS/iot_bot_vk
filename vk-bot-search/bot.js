@@ -3,6 +3,7 @@ const { VK, Keyboard } = require('vk-io');
 const { db } = require('./database');
 const { getQueueStats } = require('./ai_worker');
 const { searchFaq, buildDialogHints, DIRECT_MIN_SCORE } = require('./faq_search');
+const { courseOfGroup, withCourse } = require('./courses');
 
 // ==================== Логи ====================
 // Теги: [BOT] — события диалога, [FSM] — состояние пользователя, [SEARCH] — поиск,
@@ -85,6 +86,69 @@ async function getTicketIfParticipant(ticketId, vkId) {
 async function getRole(vkId) {
     const res = await db.query('SELECT role FROM users WHERE vk_id = $1', [vkId]);
     return res.rows.length > 0 ? res.rows[0].role : null;
+}
+
+// ==================== Курс студента по сообществу ====================
+// Источник истины — курсовое сообщество (см. courses.js): вступление в него
+// модерируется, а номер группы студент вводит сам и может ошибиться.
+
+async function getCommunity(groupId) {
+    const res = await db.query('SELECT course, is_archived FROM vk_groups WHERE group_id = $1', [groupId]);
+    return res.rows[0] || null;
+}
+
+/** Номер группы против курса сообщества. Возвращает текст отказа или null, если всё сходится. */
+async function checkGroupAgainstCommunity(groupNumber, groupId) {
+    const community = await getCommunity(groupId);
+    // Курс сообщества неизвестен (тестовое, архивное) — проверять не с чем
+    if (!community || community.is_archived || !community.course) return null;
+    const entered = courseOfGroup(groupNumber);
+    if (entered === community.course) return null;
+    return `В этом сообществе учатся студенты ${community.course} курса, а группа ${groupNumber} указывает на ${entered} курс (первая цифра после дефиса — номер курса). Проверьте номер группы.`;
+}
+
+/**
+ * Приводит данные студента в соответствие с его сообществом.
+ *
+ * 1. Запоминает сообщество, если оно ещё не известно. Раньше vk_group_id
+ *    записывался только при вопросе к ИИ — большинство студентов были «ничьи».
+ * 2. Если сообщество ушло в архив — отмечает выпуск.
+ * 3. Если цифра курса в номере группы не совпадает с курсом сообщества —
+ *    исправляет её и сообщает студенту. Так догоняются записи, которые
+ *    не перевели при переименовании (например, cron 1 августа 2026 не был подключён).
+ *
+ * Трогаем только сообщение из «своего» сообщества: если студент пишет
+ * из чужого, его данные не меняются.
+ */
+async function reconcileStudentCourse(context, user, groupId) {
+    if (user.role !== 'student' || user.is_graduated || !user.group_number) return user;
+    if (/^(reg|registration|edit_)/.test(user.state || '')) return user;
+
+    if (!user.vk_group_id) {
+        await db.query('UPDATE users SET vk_group_id = $1 WHERE vk_id = $2 AND vk_group_id IS NULL', [groupId, user.vk_id]);
+        console.info(`[COURSE] ${user.vk_id}: запомнено сообщество ${groupId}`);
+        user = { ...user, vk_group_id: groupId };
+    }
+    if (String(user.vk_group_id) !== String(groupId)) return user;
+
+    const community = await getCommunity(groupId);
+    if (!community) return user;
+
+    if (community.is_archived) {
+        await db.query('UPDATE users SET is_graduated = TRUE WHERE vk_id = $1', [user.vk_id]);
+        console.info(`[COURSE] ${user.vk_id}: сообщество в архиве — студент отмечен выпускником`);
+        return { ...user, is_graduated: true };
+    }
+    if (!community.course) return user;
+
+    const current = courseOfGroup(user.group_number);
+    if (current === null || current === community.course) return user;
+
+    const fixed = withCourse(user.group_number, community.course);
+    await db.query('UPDATE users SET group_number = $1 WHERE vk_id = $2', [fixed, user.vk_id]);
+    console.info(`[COURSE] ${user.vk_id}: номер группы приведён к курсу сообщества — ${user.group_number} → ${fixed}`);
+    await context.send(`ℹ️ Мы обновили номер вашей группы под текущий курс: ${user.group_number} → ${fixed}. Если это ошибка, поправьте группу в профиле.`);
+    return { ...user, group_number: fixed };
 }
 
 const resolveAttachments = (attachments) => {
@@ -290,6 +354,14 @@ async function handleMessage(context, vk, groupId) {
             console.info(`[BOT] Новый пользователь ${senderId} (группа ${groupId}) — начата регистрация`);
             await context.send({ message: 'Добро пожаловать! Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', payload: { command: 'student' }, color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', payload: { command: 'operator' }, color: Keyboard.POSITIVE_COLOR }).oneTime() });
             return;
+        }
+
+        // 2.5. Сверка курса студента с его сообществом. Сбой здесь не должен
+        // мешать ответу на само сообщение — поэтому отдельный обработчик ошибок.
+        try {
+            user = await reconcileStudentCourse(context, user, groupId);
+        } catch (err) {
+            console.error(`[COURSE] Не удалось сверить курс ${senderId}:`, err);
         }
 
         // 3. МАШИНА СОСТОЯНИЙ
@@ -550,12 +622,12 @@ async function processState(context, user, vk, groupId) {
 
         case 'registration_start': if (text === 'Я Студент') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } else if (text === 'Я Администратор') { await db.query("UPDATE users SET state = 'reg_operator_code' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Введите код:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
         case 'reg_student_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'registration_start' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', color: Keyboard.POSITIVE_COLOR }).oneTime() }); } if (text.length > 100) return context.send('ФИО слишком длинное.'); if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1, state = 'reg_student_group' WHERE vk_id = $2", [text, senderId]); await context.send({ message: 'Группа:(РИ-XXXXXX)', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); break;
-        case 'reg_student_group': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Введите ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } const g = text.toUpperCase(); if (g.length > 20) return context.send('Ошибка группы'); if (!REGEX_GROUP.test(g)) return context.send('Ошибка группы'); await db.query("UPDATE users SET group_number = $1, study_years = 4, role = 'student', state = 'main_menu' WHERE vk_id = $2", [g, senderId]); console.info(`[BOT] ${senderId}: регистрация студента завершена (группа ${g})`); await context.send('✅ Регистрация успешно завершена!'); await mainMenu(context, { ...user, role: 'student' }); break;
+        case 'reg_student_group': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'reg_student_fio' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Введите ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } const g = (text || '').toUpperCase(); if (g.length > 20 || !REGEX_GROUP.test(g)) return context.send('Не похоже на номер группы. Нужен формат РИ-240944: буквы, дефис и шесть цифр, первая цифра — номер курса.'); const courseMismatch = await checkGroupAgainstCommunity(g, groupId); if (courseMismatch) { console.info(`[COURSE] ${senderId}: при регистрации указана группа ${g}, не совпадающая с курсом сообщества ${groupId}`); return context.send(courseMismatch); } /* Сообщество запоминаем сразу при регистрации: по нему потом переводится курс */ await db.query("UPDATE users SET group_number = $1, study_years = 4, role = 'student', state = 'main_menu', vk_group_id = $3 WHERE vk_id = $2", [g, senderId, groupId]); console.info(`[BOT] ${senderId}: регистрация студента завершена (группа ${g})`); await context.send('✅ Регистрация успешно завершена!'); await mainMenu(context, { ...user, role: 'student' }); break;
         case 'reg_operator_code': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'registration_start' WHERE vk_id = $1", [senderId]); return context.send({ message: 'Кто вы?', keyboard: Keyboard.builder().textButton({ label: 'Я Студент', color: Keyboard.PRIMARY_COLOR }).textButton({ label: 'Я Администратор', color: Keyboard.POSITIVE_COLOR }).oneTime() }); } const cRes = await db.query('SELECT * FROM operator_codes WHERE code = $1', [text]); if (cRes.rows.length > 0) { await db.query("UPDATE users SET role = 'operator', full_name = $1, linked_code = $2, state = 'main_menu' WHERE vk_id = $3", [cRes.rows[0].admin_name, text, senderId]); console.info(`[SECURITY] ${senderId} вошёл как администратор (${cRes.rows[0].admin_name})`); await context.send('Успех!'); await mainMenu(context, { ...user, role: 'operator' }); } else { console.warn(`[SECURITY] ${senderId}: неверный код администратора — попытка входа`); await context.send({ message: 'Неверный код', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
         case 'profile_view': if (text === '✏️ Редактировать') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); const editKb = Keyboard.builder().textButton({ label: 'ФИО', color: Keyboard.PRIMARY_COLOR }); if (user.role === 'student') { editKb.textButton({ label: 'Группу', color: Keyboard.PRIMARY_COLOR }); } editKb.row().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }); await context.send({ message: 'Что изменить?', keyboard: editKb.oneTime() }); } else if (text === '❌ Удалить профиль') { await db.query("UPDATE users SET state = 'profile_delete_confirm' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Удалить?', keyboard: Keyboard.builder().textButton({ label: 'Да', color: Keyboard.NEGATIVE_COLOR }).textButton({ label: 'Нет', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } else { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); } break;
         case 'profile_edit_select': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); return; } if (text === 'ФИО') { const s = user.role === 'operator' ? 'edit_tutor_fio' : 'edit_student_fio'; await db.query("UPDATE users SET state = $1 WHERE vk_id = $2", [s, senderId]); await context.send({ message: 'Новое ФИО:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } else if (text === 'Группу' && user.role === 'student') { await db.query("UPDATE users SET state = 'edit_student_group' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Новая группа:', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() }); } break;
         case 'edit_student_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1, state = 'main_menu' WHERE vk_id = $2", [text, senderId]); await context.send('Обновлено!'); await mainMenu(context, user); break;
-        case 'edit_student_group': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } const g2 = text.toUpperCase(); if (!REGEX_GROUP.test(g2)) return context.send('Ошибка'); await db.query("UPDATE users SET group_number = $1, state = 'main_menu' WHERE vk_id = $2", [g2, senderId]); await context.send('Обновлено!'); await mainMenu(context, user); break;
+        case 'edit_student_group': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } const g2 = (text || '').toUpperCase(); if (!REGEX_GROUP.test(g2)) return context.send('Не похоже на номер группы. Нужен формат РИ-240944: буквы, дефис и шесть цифр, первая цифра — номер курса.'); const courseMismatch2 = await checkGroupAgainstCommunity(g2, user.vk_group_id || groupId); if (courseMismatch2) { console.info(`[COURSE] ${senderId}: при смене группы указана ${g2}, не совпадающая с курсом сообщества`); return context.send(courseMismatch2); } console.info(`[BOT] ${senderId} сменил группу: ${user.group_number} → ${g2}`); await db.query("UPDATE users SET group_number = $1, state = 'main_menu' WHERE vk_id = $2", [g2, senderId]); await context.send('Обновлено!'); await mainMenu(context, user); break;
         case 'edit_tutor_fio': if (text === '🔙 Назад') { await db.query("UPDATE users SET state = 'profile_edit_select' WHERE vk_id = $1", [senderId]); return context.send('Что изменить?'); } if (!REGEX_FIO.test(text)) return context.send('Ошибка ФИО'); await db.query("UPDATE users SET full_name = $1 WHERE vk_id = $2", [text, senderId]); await db.query("UPDATE operator_codes SET admin_name = $1 WHERE code = $2", [text, user.linked_code]); await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await context.send('Обновлено!'); await mainMenu(context, user); break;
 
         case 'profile_delete_confirm': if (text === 'Да') { await db.query('DELETE FROM users WHERE vk_id = $1', [senderId]); console.info(`[BOT] ${senderId} удалил свой профиль`); await context.send({ message: 'Профиль удален!' }); } else { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); await mainMenu(context, user); } break;
@@ -641,7 +713,10 @@ async function enqueueAiTask(context, user, question, faqContextText, groupId) {
             aiCtx = aiCtx.slice(aiCtx.length - 10);
         }
 
-        await db.query("UPDATE users SET state = 'ai_dialogue_mode', ai_context = $1, vk_group_id = $2 WHERE vk_id = $3", [JSON.stringify(aiCtx), groupId, senderId]);
+        // vk_group_id пользователя здесь больше не перезаписываем: это его курсовое
+        // сообщество, по нему переводится курс. Вопрос из чужого сообщества сменил бы
+        // его «прописку». Боту для ответа хватает vk_group_id в самой задаче очереди.
+        await db.query("UPDATE users SET state = 'ai_dialogue_mode', ai_context = $1 WHERE vk_id = $2", [JSON.stringify(aiCtx), senderId]);
 
         const queued = await db.query(
             "INSERT INTO ai_queue (vk_id, vk_group_id, ai_context, faq_context) VALUES ($1, $2, $3, $4) RETURNING id",
@@ -659,4 +734,4 @@ module.exports = createBotInstance;
 module.exports.isGroupAllowed = isGroupAllowed;
 module.exports.getAllowedGroupIds = getAllowedGroupIds;
 // Для тестов: обработчик сообщений без подключения к VK
-module.exports._test = { handleMessage, instrumentSend };
+module.exports._test = { handleMessage, instrumentSend, reconcileStudentCourse, checkGroupAgainstCommunity };

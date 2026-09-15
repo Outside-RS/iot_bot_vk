@@ -49,7 +49,11 @@ async function runMigration() {
                 group_name TEXT NOT NULL,
                 access_token TEXT NOT NULL,
                 is_active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP DEFAULT NOW()
+                created_at TIMESTAMP DEFAULT NOW(),
+                -- курс из названия сообщества («Второй курс …» → 2) и признак архива
+                course INTEGER,
+                is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+                name_synced_at TIMESTAMP
             );
 
             CREATE TABLE operator_codes (
@@ -87,6 +91,7 @@ async function runMigration() {
                 started_at TIMESTAMP
             );
             CREATE INDEX idx_ai_queue_status ON ai_queue(status);
+            CREATE INDEX idx_users_vk_group ON users(vk_group_id);
 
             -- Расход токенов GigaChat: у каждого класса моделей своя независимая квота
             CREATE TABLE ai_usage (
