@@ -6,9 +6,11 @@
 .env.*
 !.env.example
 
-# Туннель: в проде работает в отдельном контейнере frpc
+# Туннель и HTTPS: в проде работают в отдельных контейнерах frpc и caddy
 frpc.exe
 frpc.toml
+frpc.toml.example
+Caddyfile
 
 # Зависимости ставятся внутри образа под Linux (npm ci);
 # локальные собраны под Windows и могут сломать сборку

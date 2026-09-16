@@ -23,8 +23,9 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
 // 5. Настройка Middleware
-// Нужен при деплое за Nginx/Docker — позволяет rate-limiter видеть реальный IP клиента,
-// а не IP прокси. Без этого все запросы выглядят с одного адреса.
+// На проде перед ботом стоит Caddy (HTTPS, см. Caddyfile): доверяем одному
+// прокси — берём IP клиента из X-Forwarded-For и протокол из X-Forwarded-Proto.
+// Без этого rate-limiter видел бы все запросы с одного адреса — адреса Caddy.
 app.set('trust proxy', 1);
 const rateLimit = require('express-rate-limit');
 
@@ -53,7 +54,8 @@ app.use(helmet({
             frameAncestors: ["'none'"],
             objectSrc: ["'none'"],
             baseUri: ["'self'"],
-            // Панель пока отдаётся по HTTP, принудительный апгрейд её сломает
+            // На проде HTTP → HTTPS перенаправляет Caddy. Здесь апгрейд не включаем:
+            // локально панель открывается по http://localhost, и он бы её сломал
             upgradeInsecureRequests: null
         }
     }
@@ -98,7 +100,12 @@ app.use(session({
         maxAge: 24 * 60 * 60 * 1000,
         httpOnly: true,
         sameSite: 'strict',
-        secure: process.env.NODE_ENV === 'production'
+        // Cookie с флагом Secure, когда запрос пришёл по HTTPS: на проде это
+        // сообщает Caddy (X-Forwarded-Proto, см. trust proxy выше). Локально по
+        // http://localhost флаг не ставится, иначе браузер не вернул бы cookie
+        // и вход не работал бы. Раньше флаг зависел от NODE_ENV, который нигде
+        // не задавался, — и за HTTPS cookie осталась бы без флага Secure.
+        secure: 'auto'
     }
 }));
 

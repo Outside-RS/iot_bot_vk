@@ -1,0 +1,29 @@
+# Образец frpc.toml для docker-compose (сам frpc.toml в git не хранится — в нём токен).
+# Скопируйте в frpc.toml рядом с docker-compose.yml и впишите свой токен frps.
+
+serverAddr = "94.103.86.240"   # IP VPS, на котором работает frps
+serverPort = 7000
+auth.method = "token"
+auth.token = "ТОКЕН_ИЗ_frps.toml"
+
+# HTTPS-админка. Трафик уходит в Caddy зашифрованным, VPS его не расшифровывает.
+[[proxies]]
+name = "admin-https"
+type = "tcp"
+localIP = "caddy"
+localPort = 443
+remotePort = 443
+# Передаём Caddy настоящий IP посетителя (см. Caddyfile)
+transport.proxyProtocolVersion = "v2"
+
+# Порт 80: проверка Let's Encrypt при выдаче сертификата
+# и перенаправление http:// на https://
+# Без proxyProtocolVersion: сервер перенаправлений на порту 80 Caddy создаёт
+# автоматически, и заголовок PROXY он не разбирает — ответил бы ошибкой 400,
+# а Let's Encrypt не смог бы проверить сервер. IP посетителя здесь и не нужен.
+[[proxies]]
+name = "admin-panel"
+type = "tcp"
+localIP = "caddy"
+localPort = 80
+remotePort = 80

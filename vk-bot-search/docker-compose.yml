@@ -3,7 +3,9 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Только для самого этого компьютера. Снаружи админка открывается через
+      # Caddy по HTTPS; раньше порт был открыт во всю локальную сеть по HTTP.
+      - "127.0.0.1:3000:3000"
     depends_on:
       db:
         condition: service_healthy
@@ -31,7 +33,8 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME:-postgres}
     ports:
-      - "${DB_PORT:-5433}:5432"
+      # Тоже только для этого компьютера: базу из сети никто открывать не должен
+      - "127.0.0.1:${DB_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -41,14 +44,35 @@ services:
       timeout: 5s
       retries: 5
 
+  # HTTPS для админки: получает и продлевает сертификат, передаёт запросы боту.
+  # Настройки — в Caddyfile. Порты на хост не публикуются: снаружи к Caddy
+  # приходит только туннель frpc.
+  caddy:
+    image: caddy:2.11-alpine
+    restart: unless-stopped
+    depends_on:
+      - bot
+    environment:
+      - PUBLIC_IP=${PUBLIC_IP:?Укажите в .env PUBLIC_IP — публичный IP, по которому открывается админка}
+      - TLS_MODE=${TLS_MODE:-acme}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Сертификаты и учётная запись Let's Encrypt. Том обязателен: без него
+      # сертификат запрашивался бы заново при каждом пересоздании контейнера
+      # и быстро упёрся бы в лимиты Let's Encrypt.
+      - caddy_data:/data
+      - caddy_config:/config
+
   frpc:
     image: snowdreamtech/frpc:latest
     restart: unless-stopped
     volumes:
       - ./frpc.toml:/etc/frp/frpc.toml
     depends_on:
-      - bot
+      - caddy
 
 volumes:
   postgres_data:
   bot_logs:
+  caddy_data:
+  caddy_config:
