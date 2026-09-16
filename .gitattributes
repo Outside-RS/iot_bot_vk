@@ -1,0 +1,10 @@
+# Файлы, которые выполняются внутри Linux-контейнеров и на сервере, должны
+# оставаться с переводами строк LF. Иначе после клонирования репозитория на
+# Windows Git подставит CRLF, и контейнер откажется запускать скрипт
+# («no such file or directory» на строке #!/bin/sh).
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+Caddyfile   text eol=lf
+*.toml      text eol=lf
+*.yml       text eol=lf
+*.sql       text eol=lf
