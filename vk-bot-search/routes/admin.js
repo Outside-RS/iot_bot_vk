@@ -6,6 +6,22 @@ const { db } = require('../database');
 const { VK } = require('vk-io');
 const createBotInstance = require('../bot');
 const { parseCommunityName, describeCommunity } = require('../courses');
+const fs = require('fs');
+const path = require('path');
+
+// Состояние резервных копий для главной страницы. Файл пишет контейнер backup
+// после каждой копии (см. backup/backup.sh). Копии старше двух суток
+// подсвечиваются красным: иначе о том, что они перестали делаться, никто не узнает.
+function readBackupStatus() {
+    try {
+        const dir = process.env.BACKUP_DIR || path.join(__dirname, '..', 'backups');
+        const st = JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8'));
+        const ageHours = (Date.now() - new Date(st.time.replace(' ', 'T')).getTime()) / 3600000;
+        return { ...st, stale: !(ageHours < 48) };
+    } catch (e) {
+        return null;   // копии не настроены или ещё ни разу не делались
+    }
+}
 
 const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -148,7 +164,8 @@ router.get('/', requireAuth, noCache, async (req, res) => {
             ollamaStatus,
             ollamaModel: aiSettings.ollama_model || 'qwen2.5:7b',
             gigachatStatus,
-            gigachatModel: aiSettings.gigachat_model || 'GigaChat-2'
+            gigachatModel: aiSettings.gigachat_model || 'GigaChat-2',
+            backup: readBackupStatus()
         });
     } catch (e) {
         console.error('[Admin] Dashboard error:', e.message);

@@ -16,6 +16,9 @@
             border-radius: 8px;
             margin-bottom: 22px;
         }
+        .backup-state { font-size: 20px; font-weight: 600; margin: 6px 0 4px; }
+        .backup-state.success { color: #3ba55d; }
+        .backup-state.danger { color: #d83c3e; }
         .test-code-warning p { margin: 6px 0 0; font-size: 14px; line-height: 1.5; }
         .test-code-warning code { background: rgba(0,0,0,.35); padding: 1px 5px; border-radius: 4px; }
         .test-code-warning a { color: #ffb020; }
@@ -95,6 +98,28 @@
                 <div class="stat-number <%= botsCount > 0 ? 'success' : 'danger' %>">
                     <%= botsCount %>
                 </div>
+            </div>
+
+            <!-- Резервная копия базы: делает контейнер backup раз в сутки -->
+            <div class="stat-card">
+                <h3>💾 Резервная копия</h3>
+                <% var b = typeof backup !== 'undefined' ? backup : null; %>
+                <% if (!b) { %>
+                    <div class="backup-state danger">не настроена</div>
+                    <div class="ai-card-hint">Копии базы не делаются</div>
+                <% } else { %>
+                    <div class="backup-state <%= b.ok && !b.stale ? 'success' : 'danger' %>">
+                        <%= b.time %>
+                    </div>
+                    <div class="ai-card-hint">
+                        <% if (!b.ok) { %>
+                            Последняя попытка не удалась — смотрите журнал контейнера backup
+                        <% } else { %>
+                            <%= b.size %><% if (b.sent === 'yes') { %>, копия на сервере<% } else if (b.sent === 'no') { %>, на сервер не ушла<% } else { %>, только на этом компьютере<% } %>
+                            <% if (b.stale) { %><br>Копия старше двух суток<% } %>
+                        <% } %>
+                    </div>
+                <% } %>
             </div>
 
             <!-- Карточка ИИ-ассистента (кликабельная) -->

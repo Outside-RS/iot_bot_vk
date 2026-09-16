@@ -18,6 +18,9 @@ services:
       # Ollama, если она стоит на "хосте" (вашем ПК), доступна по этому адресу:
       - OLLAMA_URL=http://host.docker.internal:11434
     volumes:
+      # Папка с копиями базы — только для чтения: админка показывает на главной,
+      # когда делалась последняя копия и ушла ли она на сервер
+      - ./backups:/app/backups:ro
       # Логи в именованном томе: переживают пересборку контейнера. Именно том,
       # а не папка ./logs: бот работает не от root, и в папку, созданную Docker
       # от root, писать бы не смог. Скачать лог за любой день — в админке, «Логи».
@@ -63,6 +66,26 @@ services:
       - caddy_data:/data
       - caddy_config:/config
 
+  # Ночная резервная копия базы: в папку backups рядом с проектом и на сервер.
+  # Расписание и хранение — в .env (BACKUP_*). Настройки см. backup/backup.sh
+  backup:
+    build: ./backup
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - TZ=${LOG_TIMEZONE:-Asia/Yekaterinburg}
+    volumes:
+      # Копии видны в обычной папке: их можно скопировать на флешку или в облако
+      - ./backups:/backups
+      # Ключ для отправки копий на сервер и список известных серверов
+      - backup_keys:/keys
+
   frpc:
     image: snowdreamtech/frpc:latest
     restart: unless-stopped
@@ -76,3 +99,4 @@ volumes:
   bot_logs:
   caddy_data:
   caddy_config:
+  backup_keys:
