@@ -905,7 +905,7 @@ describe('answer_policy — маршрут к администратору', () 
     });
 
     it('Не дублирует, если администратор уже упомянут', () => {
-        const text = 'Адреса почты деканата в базе знаний нет. Нажмите «Передать админу».';
+        const text = 'Адреса почты деканата в базе знаний нет. Нажмите «Передать администратору».';
         assert.equal(ensureAdminRoute(text, { hadContext: false }), text);
     });
 
@@ -959,7 +959,7 @@ describe('ai_service — промпт и история (Этап 4)', () => {
     it('Без контекста модель отправляет к администратору через кнопку бота', () => {
         const prompt = buildSystemPrompt('');
         assert.ok(prompt.includes('Не отвечай по памяти'));
-        assert.ok(prompt.includes('«Передать админу»'));
+        assert.ok(prompt.includes('«Передать администратору»'));
     });
 
     it('С контекстом модель предупреждена, что не все записи относятся к вопросу', () => {
@@ -1377,5 +1377,170 @@ describe('bot — ограничение подбора кода админис�
         assert.ok(codeLockRemaining(ATTACKER) > 0);
         assert.equal(codeLockRemaining('someone-else'), 0);
         codeAttempts.delete(ATTACKER);
+    });
+});
+
+// ═══════════════════════════════════════════════════════
+// 12. ДЛИННЫЕ ВОПРОСЫ И ПЕРЕХОД К АДМИНИСТРАТОРУ
+// ═══════════════════════════════════════════════════════
+
+describe('bot — длинный вопрос и очередь ИИ', () => {
+    const { enqueueAiTask, handleMessage, AI_QUESTION_MAX_LENGTH, LONG_WAIT_SECONDS } = require('../bot')._test;
+    const STUDENT = 99999991;
+    const GROUP = 999000013;
+    const OPERATOR = 99999992;
+
+    const sent = [];
+    const ctx = (over = {}) => ({
+        senderId: STUDENT,
+        attachments: [],
+        send: async (m) => { sent.push(m); return 1; },
+        ...over
+    });
+    // Заглушка VK: уведомления администраторам никуда не уходят
+    const vk = { api: { messages: { send: async () => 1 } } };
+
+    const student = async () => {
+        await db.query('DELETE FROM users WHERE vk_id = $1', [STUDENT]);
+        await db.query(
+            "INSERT INTO users (vk_id, role, full_name, group_number, state) VALUES ($1, 'student', 'Тестов Тест', 'РИ-240944', 'ask_question_mode')",
+            [STUDENT]
+        );
+        return (await db.query('SELECT * FROM users WHERE vk_id = $1', [STUDENT])).rows[0];
+    };
+    const queueSize = async () => Number((await db.query('SELECT count(*) FROM ai_queue WHERE vk_id = $1', [STUDENT])).rows[0].count);
+    const keyboardText = (message) => JSON.stringify(message.keyboard || {});
+
+    before(async () => {
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[STUDENT, OPERATOR]]);
+        await db.query("INSERT INTO users (vk_id, role, full_name, state) VALUES ($1, 'operator', 'Админ Тестовый', 'main_menu')", [OPERATOR]);
+    });
+    after(async () => {
+        await db.query('DELETE FROM ai_queue WHERE vk_id = $1', [STUDENT]);
+        await db.query('DELETE FROM tickets WHERE student_vk_id = $1', [STUDENT]);
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[STUDENT, OPERATOR]]);
+    });
+    beforeEach(async () => {
+        sent.length = 0;
+        await db.query('DELETE FROM ai_queue');
+    });
+
+    it('Короткий вопрос уходит в очередь ИИ, лишних кнопок нет', async () => {
+        const user = await student();
+        await enqueueAiTask(ctx(), user, 'Когда стипендия?', '', GROUP);
+
+        assert.equal(await queueSize(), 1);
+        assert.equal(sent.length, 1);
+        assert.ok(!keyboardText(sent[0]).includes('администратору'), 'при пустой очереди кнопка администратора не нужна');
+    });
+
+    // Вопрос на тысячу с лишним символов модель всё равно не осилит:
+    // в базе знаний таких формулировок нет, и она начинает додумывать
+    it('Длинный вопрос в очередь не ставится — предлагается администратор', async () => {
+        const user = await student();
+        const long = 'Здравствуйте, у меня вопрос по пересдаче. '.repeat(30);
+        assert.ok(long.length > AI_QUESTION_MAX_LENGTH);
+
+        await enqueueAiTask(ctx(), user, long, '', GROUP);
+
+        assert.equal(await queueSize(), 0, 'ИИ такой вопрос не получает');
+        assert.equal(sent.length, 1);
+        assert.ok(keyboardText(sent[0]).includes('Передать администратору'));
+    });
+
+    it('Текст длинного вопроса сохраняется: кнопка создаёт заявку с ним, а не с заглушкой', async () => {
+        const user = await student();
+        const long = 'Не могу разобраться с баллами за курс VK Education. '.repeat(25);
+        await enqueueAiTask(ctx(), user, long, '', GROUP);
+
+        await handleMessage(ctx({ text: null, messagePayload: { command: 'operator_request' } }), vk, GROUP);
+
+        const ticket = (await db.query('SELECT question FROM tickets WHERE student_vk_id = $1 ORDER BY id DESC LIMIT 1', [STUDENT])).rows[0];
+        assert.ok(ticket, 'заявка должна создаться');
+        assert.ok(ticket.question.startsWith('Не могу разобраться с баллами'), ticket.question.slice(0, 60));
+    });
+
+    it('При длинной очереди рядом с ожиданием появляется кнопка администратора', async () => {
+        const user = await student();
+        // Столько задач, что расчётное ожидание заведомо больше порога
+        for (let i = 0; i < 30; i++) {
+            await db.query("INSERT INTO ai_queue (vk_id, vk_group_id, ai_context, faq_context) VALUES ($1, $2, '[]', '')", [OPERATOR, GROUP]);
+        }
+
+        await enqueueAiTask(ctx(), user, 'Где посмотреть расписание?', '', GROUP);
+
+        assert.equal(await queueSize(), 1, 'вопрос всё равно ставится в очередь');
+        assert.equal(sent.length, 1);
+        assert.ok(String(sent[0].message).includes('Ждать долго'), sent[0].message);
+        assert.ok(keyboardText(sent[0]).includes('Передать администратору'));
+        await db.query('DELETE FROM ai_queue WHERE vk_id = $1', [OPERATOR]);
+    });
+
+    // Регрессия: задача оставалась в очереди, и студент получал ответ ИИ
+    // уже после того, как передал вопрос администратору
+    it('Переход к администратору снимает вопрос с очереди ИИ', async () => {
+        const user = await student();
+        await enqueueAiTask(ctx(), user, 'Как попасть в общежитие?', '', GROUP);
+        assert.equal(await queueSize(), 1);
+
+        await handleMessage(ctx({ text: null, messagePayload: { command: 'operator_request' } }), vk, GROUP);
+
+        assert.equal(await queueSize(), 0, 'задача ИИ должна быть снята');
+    });
+
+    it('Порог ожидания задан в секундах и разумен', () => {
+        assert.ok(LONG_WAIT_SECONDS >= 60 && LONG_WAIT_SECONDS <= 600);
+    });
+});
+
+describe('bot — завершение диалога', () => {
+    const { handleMessage } = require('../bot')._test;
+    const STUDENT = 99999993;
+    const OPERATOR = 99999994;
+    const GROUP = 999000014;
+
+    // Заглушка VK: запоминаем, что ушло собеседнику
+    const notified = [];
+    const vk = { api: { messages: { send: async (params) => { notified.push(params); return 1; } } } };
+    const ctx = (senderId) => ({ senderId, text: '🏁 Завершить этот тикет', attachments: [], send: async () => 1 });
+
+    let ticketId;
+    const openDialog = async () => {
+        await db.query('DELETE FROM tickets WHERE student_vk_id = $1', [STUDENT]);
+        const t = await db.query(
+            "INSERT INTO tickets (student_vk_id, operator_vk_id, question, status) VALUES ($1, $2, 'Вопрос', 'active') RETURNING id",
+            [STUDENT, OPERATOR]
+        );
+        ticketId = t.rows[0].id;
+        await db.query("UPDATE users SET state = 'chat_mode', current_chat_ticket_id = $1 WHERE vk_id = ANY($2)", [ticketId, [STUDENT, OPERATOR]]);
+        notified.length = 0;
+    };
+
+    before(async () => {
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[STUDENT, OPERATOR]]);
+        await db.query("INSERT INTO users (vk_id, role, full_name, state) VALUES ($1, 'student', 'Тестов Тест', 'main_menu'), ($2, 'operator', 'Админ Тестовый', 'main_menu')", [STUDENT, OPERATOR]);
+    });
+    after(async () => {
+        await db.query('DELETE FROM tickets WHERE student_vk_id = $1', [STUDENT]);
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[STUDENT, OPERATOR]]);
+    });
+
+    it('Студенту сообщают, что диалог завершил администратор', async () => {
+        await openDialog();
+        await handleMessage(ctx(OPERATOR), vk, GROUP);
+
+        assert.equal(notified.length, 1);
+        assert.equal(String(notified[0].peer_id), String(STUDENT));
+        assert.ok(notified[0].message.includes('Администратор завершил диалог'), notified[0].message);
+        assert.ok(notified[0].message.includes(`#${ticketId}`));
+    });
+
+    it('Администратору сообщают, что диалог завершил студент', async () => {
+        await openDialog();
+        await handleMessage(ctx(STUDENT), vk, GROUP);
+
+        assert.equal(notified.length, 1);
+        assert.equal(String(notified[0].peer_id), String(OPERATOR));
+        assert.ok(notified[0].message.includes('Студент завершил диалог'), notified[0].message);
     });
 });

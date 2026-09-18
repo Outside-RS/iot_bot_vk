@@ -40,7 +40,7 @@ function getQueueStats() {
 
 const answerKeyboard = () => Keyboard.builder()
     .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).row()
-    .textButton({ label: '👨‍💼 Передать админу', payload: { command: 'operator_request' }, color: Keyboard.PRIMARY_COLOR });
+    .textButton({ label: '👨‍💼 Передать администратору', payload: { command: 'operator_request' }, color: Keyboard.PRIMARY_COLOR });
 
 /**
  * Получает ответ у провайдеров в порядке: облако -> локальная модель.

@@ -63,6 +63,18 @@ async function notify(vk, peerId, params, what) {
     }
 }
 
+// Предел длины сообщения. ВКонтакте пропускает до 4096 символов, но столько
+// ни в переписке, ни в вопросе не нужно — ограничиваем разумной длиной.
+const MESSAGE_MAX_LENGTH = 2500;
+
+// Вопросы длиннее этого ИИ отвечает плохо: в базе знаний таких развёрнутых
+// формулировок нет, и модель начинает додумывать. Предлагаем сразу администратора.
+const AI_QUESTION_MAX_LENGTH = 1000;
+
+// Когда расчётное ожидание в очереди больше этого, рядом с ожиданием
+// предлагаем не ждать ИИ, а передать вопрос администратору
+const LONG_WAIT_SECONDS = 3 * 60;
+
 const REGEX_FIO = /^[А-Яа-яЁё]+\s+[А-Яа-яЁё]+.*$/;
 const REGEX_GROUP = /^[А-Я]{2,}-\d{6}$/;
 
@@ -234,9 +246,9 @@ async function handleMessage(context, vk, groupId) {
 
     console.info(`[BOT] ← ${senderId} (группа ${groupId}): ${describeIncoming(context)}`);
 
-    if (text && text.length > 1000) {
-        console.info(`[BOT] Сообщение от ${senderId} отклонено: ${text.length} символов при лимите 1000`);
-        return context.send('❌ Сообщение слишком длинное. Максимум — 1000 символов.');
+    if (text && text.length > MESSAGE_MAX_LENGTH) {
+        console.info(`[BOT] Сообщение от ${senderId} отклонено: ${text.length} символов при лимите ${MESSAGE_MAX_LENGTH}`);
+        return context.send(`❌ Сообщение слишком длинное: ${text.length} символов при лимите ${MESSAGE_MAX_LENGTH}. Сократите текст или отправьте его частями.`);
     }
 
     try {
@@ -317,6 +329,14 @@ async function handleMessage(context, vk, groupId) {
                 return;
             }
             if (messagePayload.command === 'confirm_send' || messagePayload.command === 'operator_request') {
+                // Вопрос уходит к администратору — ждать ответа ИИ больше незачем.
+                // Воркер проверяет наличие задачи перед отправкой ответа, поэтому
+                // удаление безопасно даже во время генерации.
+                const cancelled = await db.query("DELETE FROM ai_queue WHERE vk_id = $1 AND status IN ('pending', 'processing') RETURNING id", [senderId]);
+                if (cancelled.rowCount > 0) {
+                    console.info(`[QUEUE] ${senderId}: вопрос снят с очереди ИИ — передан администратору`);
+                }
+
                 const userRes = await db.query('SELECT group_number, full_name, ai_context, pending_attachments FROM users WHERE vk_id = $1', [senderId]);
                 const user = userRes.rows[0];
 
@@ -421,18 +441,23 @@ async function processState(context, user, vk, groupId) {
             if (text === '🏁 Завершить этот тикет' || text === '🏁 Завершить вопрос') {
                 await db.query("UPDATE tickets SET status = 'closed' WHERE id = $1", [user.current_chat_ticket_id]);
                 const t = (await db.query('SELECT * FROM tickets WHERE id = $1', [user.current_chat_ticket_id])).rows[0];
-                const targetId = (user.role === 'operator') ? t.student_vk_id : t.operator_vk_id;
-                console.info(`[TICKET] Тикет #${t.id} закрыт ${user.role === 'operator' ? 'администратором' : 'студентом'} ${senderId}`);
+                const closedByOperator = user.role === 'operator';
+                const targetId = closedByOperator ? t.student_vk_id : t.operator_vk_id;
+                console.info(`[TICKET] Тикет #${t.id} закрыт ${closedByOperator ? 'администратором' : 'студентом'} ${senderId}`);
                 if (targetId) {
-                    await notify(vk, targetId, { message: `🏁 Тикет #${t.id} завершен.` }, `уведомление о закрытии тикета #${t.id}`);
+                    // Собеседнику важно понимать, кто именно завершил разговор
+                    const noticeText = closedByOperator
+                        ? `🏁 Администратор завершил диалог по вопросу #${t.id}.`
+                        : `🏁 Студент завершил диалог по вопросу #${t.id}.`;
+                    await notify(vk, targetId, { message: noticeText }, `уведомление о закрытии тикета #${t.id}`);
                     await db.query("UPDATE users SET current_chat_ticket_id = NULL, state = 'main_menu' WHERE vk_id = $1 AND current_chat_ticket_id = $2", [targetId, t.id]);
                 }
                 await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]);
-                await context.send('Тикет закрыт.');
+                await context.send(`Диалог по вопросу #${t.id} завершён.`);
                 return mainMenu(context, user);
             }
             const activeT = (await db.query('SELECT * FROM tickets WHERE id = $1', [user.current_chat_ticket_id])).rows[0];
-            if (!activeT || activeT.status === 'closed') { await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); return context.send('Тикет закрыт.'); }
+            if (!activeT || activeT.status === 'closed') { await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); return context.send('Этот диалог уже завершён.'); }
             const recId = (user.role === 'operator') ? activeT.student_vk_id : activeT.operator_vk_id;
             if (recId) {
                 const atts = resolveAttachments(attachments);
@@ -707,6 +732,22 @@ async function enqueueAiTask(context, user, question, faqContextText, groupId) {
             });
         }
 
+        if ((question || '').length > AI_QUESTION_MAX_LENGTH) {
+            console.info(`[QUEUE] ${senderId}: вопрос из ${question.length} символов не отправлен ИИ — предложено передать администратору`);
+            // Текст не влезает в payload кнопки (у ВКонтакте лимит 255 символов),
+            // поэтому кладём его в историю диалога — обработчик кнопки возьмёт его оттуда
+            const saved = [...(user.ai_context || []), { role: 'user', content: question }].slice(-10);
+            await db.query('UPDATE users SET ai_context = $1 WHERE vk_id = $2', [JSON.stringify(saved), senderId]);
+            return context.send({
+                message: `📝 Вопрос получился длинным (${question.length} символов). ИИ-ассистент отвечает по коротким формулировкам и на таком тексте, скорее всего, ошибётся — лучше сразу передать его администратору.`,
+                keyboard: Keyboard.builder()
+                    .textButton({ label: '✉️ Передать администратору', payload: { command: 'operator_request' }, color: Keyboard.POSITIVE_COLOR })
+                    .row()
+                    .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR })
+                    .oneTime()
+            });
+        }
+
         const countRes = await db.query("SELECT COUNT(*) FROM ai_queue WHERE status = 'pending'");
         const pendingCount = parseInt(countRes.rows[0].count);
 
@@ -727,15 +768,21 @@ async function enqueueAiTask(context, user, question, faqContextText, groupId) {
         // «10 ответов в минуту». Считаем последовательно: у GigaChat для
         // физлиц доступен всего один поток.
         const { avgSeconds } = getQueueStats();
+        const waitSeconds = (pendingCount + 1) * avgSeconds;
         let waitMsg = '🧠 Ваш вопрос передан ИИ-ассистенту.';
         if (pendingCount > 0) {
-            waitMsg += `\nПеред вами в очереди: ${pendingCount}. Примерное время ответа: ${formatWait((pendingCount + 1) * avgSeconds)}.`;
+            waitMsg += `\nПеред вами в очереди: ${pendingCount}. Примерное время ответа: ${formatWait(waitSeconds)}.`;
         }
 
-        await context.send({
-            message: waitMsg,
-            keyboard: Keyboard.builder().textButton({ label: '🏠 В меню (отменить)', color: Keyboard.SECONDARY_COLOR }).oneTime()
-        });
+        // При длинной очереди ждать несколько минут ради ответа ИИ бессмысленно —
+        // даём уйти к администратору сразу, не отменяя вопрос вручную
+        const waitKeyboard = Keyboard.builder().textButton({ label: '🏠 В меню (отменить)', color: Keyboard.SECONDARY_COLOR });
+        if (waitSeconds >= LONG_WAIT_SECONDS) {
+            waitMsg += '\nЖдать долго? Можно не ждать ИИ и передать вопрос администратору.';
+            waitKeyboard.row().textButton({ label: '✉️ Передать администратору', payload: { command: 'operator_request' }, color: Keyboard.POSITIVE_COLOR });
+        }
+
+        await context.send({ message: waitMsg, keyboard: waitKeyboard.oneTime() });
 
         let aiCtx = user.ai_context || [];
         aiCtx.push({ role: 'user', content: question });
@@ -766,4 +813,4 @@ module.exports = createBotInstance;
 module.exports.isGroupAllowed = isGroupAllowed;
 module.exports.getAllowedGroupIds = getAllowedGroupIds;
 // Для тестов: обработчик сообщений без подключения к VK
-module.exports._test = { handleMessage, instrumentSend, reconcileStudentCourse, checkGroupAgainstCommunity, codeLockRemaining, registerCodeFailure, codeAttempts };
+module.exports._test = { handleMessage, instrumentSend, reconcileStudentCourse, checkGroupAgainstCommunity, codeLockRemaining, registerCodeFailure, codeAttempts, enqueueAiTask, AI_QUESTION_MAX_LENGTH, LONG_WAIT_SECONDS };
