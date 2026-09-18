@@ -133,6 +133,8 @@ async function runMigration() {
                 pending_attachments JSONB,
                 -- уведомления администратора о новых вопросах (переключаются в боте)
                 notify_tickets BOOLEAN NOT NULL DEFAULT TRUE,
+                -- черновик записи базы знаний, пока администратор его не подтвердил
+                faq_draft JSONB,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 

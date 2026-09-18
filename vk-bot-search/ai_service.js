@@ -542,6 +542,102 @@ async function askGigaChat(messages, faqContext, modelId = null) {
     };
 }
 
+// ======================= РАЗБОР ДИАЛОГА ДЛЯ БАЗЫ ЗНАНИЙ =======================
+
+const FAQ_DRAFT_PROMPT = `Ты помогаешь вести базу знаний бота поддержки студентов института.
+
+На вход — переписка студента с администратором. Нужно превратить её в одну запись базы знаний:
+коротко сформулировать вопрос и дать самодостаточный ответ.
+
+Правила:
+- Вопрос: одна строка от лица студента, без имён и приветствий, максимум 15 слов.
+- Ответ: только то, что администратор действительно сообщил. Ничего не добавляй от себя:
+  ни телефонов, ни адресов, ни ссылок, которых не было в переписке. Пиши по существу,
+  в 1-4 предложениях, безлично («нужно подойти», а не «подойди»).
+- Не переноси в ответ разовые обстоятельства: фамилию студента, номер его группы,
+  конкретные даты вида «завтра», номер обращения.
+- Ключевые слова: 3-7 фраз через запятую, по которым студенты будут это искать.
+- Категория: выбери одну ИЗ СПИСКА, если подходит; если ни одна не подходит — придумай короткую.
+
+Ответ верни СТРОГО в формате JSON, без пояснений и без markdown:
+{"category": "...", "question": "...", "answer": "...", "keywords": "..."}`;
+
+/** Достаёт JSON из ответа модели: она иногда оборачивает его в текст или ``` */
+function parseDraftJson(text) {
+    const cleaned = String(text || '').replace(/```json|```/gi, '').trim();
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start === -1 || end === -1 || end < start) {
+        throw new Error('модель вернула ответ не в формате JSON');
+    }
+    const draft = JSON.parse(cleaned.slice(start, end + 1));
+    const value = (v) => String(v === undefined || v === null ? '' : v).trim();
+    const result = {
+        category: value(draft.category) || 'Без категории',
+        question: value(draft.question),
+        answer: value(draft.answer),
+        keywords: value(draft.keywords)
+    };
+    if (!result.question || !result.answer) {
+        throw new Error('в ответе модели нет вопроса или ответа');
+    }
+    return result;
+}
+
+/**
+ * Готовит запись базы знаний по переписке администратора со студентом.
+ * Возвращает { category, question, answer, keywords } — черновик,
+ * который администратор подтверждает в боте. Сам ничего не сохраняет.
+ */
+async function draftFaqFromDialog(dialogText, categories = []) {
+    const token = await getGigaChatToken();
+    const chain = await getGigaChatChain();
+    if (chain.length === 0) throw new Error('все квоты GigaChat исчерпаны');
+    const model = chain[0].id;
+
+    const categoryList = categories.length ? `Существующие категории: ${categories.join(', ')}.` : '';
+
+    const response = await gigaChatFetch('https://gigachat.devices.sberbank.ru/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+            model,
+            messages: [
+                { role: 'system', content: `${FAQ_DRAFT_PROMPT}\n${categoryList}` },
+                { role: 'user', content: dialogText }
+            ],
+            temperature: 0.1,   // пересказ переписки, а не сочинение
+            max_tokens: 800,
+            n: 1,
+            stream: false
+        })
+    });
+
+    if (!response.ok) {
+        const errText = await response.text();
+        if (response.status === 401) resetGigaChatToken();
+        if (isQuotaError(response.status, errText)) {
+            await markExhausted(model);
+            const quotaErr = new Error(`GigaChat quota exhausted for ${model}: ${errText}`);
+            quotaErr.quotaExhausted = true;
+            throw quotaErr;
+        }
+        throw new Error(`GigaChat API error ${response.status}: ${errText}`);
+    }
+
+    const data = await response.json();
+    if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+        throw new Error('GigaChat вернул пустой ответ');
+    }
+    await recordUsage(model, data.usage ? (data.usage.total_tokens || 0) : 0);
+
+    return parseDraftJson(data.choices[0].message.content);
+}
+
 module.exports = {
     askOllama,
     askGigaChat,
@@ -552,6 +648,7 @@ module.exports = {
     invalidateSettingsCache,
     getSettings,
     gigaChatFetch,
+    draftFaqFromDialog,
     // Для тестов
-    _test: { cleanResponse, buildSystemPrompt, prepareMessages }
+    _test: { cleanResponse, buildSystemPrompt, prepareMessages, parseDraftJson, FAQ_DRAFT_PROMPT }
 };

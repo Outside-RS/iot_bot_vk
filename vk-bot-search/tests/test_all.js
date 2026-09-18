@@ -1622,3 +1622,167 @@ describe('bot — уведомления администраторов', () => 
         assert.ok(String(answers[0]).includes('только администраторам'), String(answers[0]));
     });
 });
+
+// ═══════════════════════════════════════════════════════
+// 13. ПЕРЕНОС ДИАЛОГА В БАЗУ ЗНАНИЙ
+// ═══════════════════════════════════════════════════════
+
+describe('ai_service — разбор ответа модели', () => {
+    const { parseDraftJson } = require('../ai_service')._test;
+
+    it('JSON достаётся из ответа, даже если модель обернула его в текст', () => {
+        const draft = parseDraftJson('Вот запись:\n```json\n{"category":"Учёба","question":"Где взять справку?","answer":"В деканате, каб. Р-219.","keywords":"справка, деканат"}\n```');
+        assert.equal(draft.category, 'Учёба');
+        assert.equal(draft.question, 'Где взять справку?');
+        assert.equal(draft.keywords, 'справка, деканат');
+    });
+
+    it('Пустая категория заменяется, пустой вопрос — ошибка', () => {
+        const draft = parseDraftJson('{"category":"","question":"Вопрос","answer":"Ответ","keywords":""}');
+        assert.equal(draft.category, 'Без категории');
+        assert.throws(() => parseDraftJson('{"category":"Учёба","question":"","answer":"Ответ"}'));
+        assert.throws(() => parseDraftJson('модель ответила текстом без json'));
+    });
+});
+
+describe('bot — запись в базу знаний из диалога', () => {
+    const bot = require('../bot');
+    const { handleMessage, buildDialogText } = bot._test;
+    const aiService = require('../ai_service');
+    const STUDENT = 99999981;
+    const ADMIN = 99999982;
+    const OTHER_ADMIN = 99999983;
+    const GROUP = 999000016;
+
+    const sent = [];
+    const vk = { api: { messages: { send: async () => 1 } } };
+    const ctx = (senderId, payload) => ({
+        senderId, text: null, attachments: [], messagePayload: payload,
+        send: async (m) => { sent.push(m); return 1; }
+    });
+    const lastMessage = () => sent[sent.length - 1];
+    const keyboardOf = (m) => JSON.stringify((m && m.keyboard) || {});
+
+    let ticketId;
+    const realDraft = aiService.draftFaqFromDialog;
+
+    before(async () => {
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[STUDENT, ADMIN, OTHER_ADMIN]]);
+        await db.query(
+            `INSERT INTO users (vk_id, role, full_name, group_number, state) VALUES
+                ($1, 'student', 'Тестов Тест', 'РИ-240944', 'main_menu'),
+                ($2, 'operator', 'Алёна', NULL, 'main_menu'),
+                ($3, 'operator', 'Иван', NULL, 'main_menu')`,
+            [STUDENT, ADMIN, OTHER_ADMIN]
+        );
+
+        const t = await db.query(
+            "INSERT INTO tickets (student_vk_id, operator_vk_id, question, status) VALUES ($1, $2, 'Где получить справку об обучении?', 'closed') RETURNING id",
+            [STUDENT, ADMIN]
+        );
+        ticketId = t.rows[0].id;
+        await db.query(
+            "INSERT INTO messages (ticket_id, sender_vk_id, text) VALUES ($1, $2, 'Здравствуйте, мне нужна справка'), ($1, $3, 'Подойдите в деканат, аудитория Р-219'), ($1, $2, 'Спасибо!')",
+            [ticketId, STUDENT, ADMIN]
+        );
+    });
+
+    after(async () => {
+        aiService.draftFaqFromDialog = realDraft;
+        await db.query('DELETE FROM faq WHERE category = $1', ['Тестовая категория']);
+        await db.query('DELETE FROM messages WHERE ticket_id = $1', [ticketId]);
+        await db.query('DELETE FROM tickets WHERE student_vk_id = $1', [STUDENT]);
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[STUDENT, ADMIN, OTHER_ADMIN]]);
+    });
+
+    beforeEach(async () => {
+        sent.length = 0;
+        aiService.draftFaqFromDialog = async () => ({
+            category: 'Тестовая категория',
+            question: 'Где получить справку об обучении?',
+            answer: 'Нужно подойти в деканат, аудитория Р-219.',
+            keywords: 'справка, деканат'
+        });
+        await db.query('UPDATE users SET faq_draft = NULL WHERE vk_id = ANY($1)', [[ADMIN, OTHER_ADMIN]]);
+        await db.query('DELETE FROM faq WHERE category = $1', ['Тестовая категория']);
+    });
+
+    it('Переписка собирается с указанием, кто что сказал', async () => {
+        const ticket = (await db.query('SELECT * FROM tickets WHERE id = $1', [ticketId])).rows[0];
+        const text = await buildDialogText(ticket);
+
+        assert.ok(text.startsWith('Вопрос студента: Где получить справку'), text);
+        assert.ok(text.includes('Студент: Здравствуйте, мне нужна справка'));
+        assert.ok(text.includes('Администратор: Подойдите в деканат, аудитория Р-219'));
+    });
+
+    it('Черновик показывается администратору и в базу знаний пока не пишется', async () => {
+        await handleMessage(ctx(ADMIN, { command: 'faq_draft', ticket_id: ticketId }), vk, GROUP);
+
+        const preview = lastMessage();
+        assert.ok(String(preview.message).includes('Черновик записи'), preview.message);
+        assert.ok(String(preview.message).includes('Нужно подойти в деканат'));
+        assert.ok(keyboardOf(preview).includes('Сохранить'));
+
+        const faq = await db.query("SELECT count(*) FROM faq WHERE category = 'Тестовая категория'");
+        assert.equal(Number(faq.rows[0].count), 0, 'до подтверждения записи быть не должно');
+
+        const draft = (await db.query('SELECT faq_draft FROM users WHERE vk_id = $1', [ADMIN])).rows[0].faq_draft;
+        assert.equal(draft.ticket_id, ticketId);
+    });
+
+    it('После подтверждения запись появляется в базе знаний, черновик очищается', async () => {
+        await handleMessage(ctx(ADMIN, { command: 'faq_draft', ticket_id: ticketId }), vk, GROUP);
+        await handleMessage(ctx(ADMIN, { command: 'faq_save' }), vk, GROUP);
+
+        const row = (await db.query("SELECT * FROM faq WHERE category = 'Тестовая категория'")).rows[0];
+        assert.ok(row, 'запись должна появиться');
+        assert.equal(row.question, 'Где получить справку об обучении?');
+        assert.equal(row.keywords, 'справка, деканат');
+        assert.ok(String(lastMessage()).includes('Добавлено в базу знаний'), String(lastMessage()));
+
+        const draft = (await db.query('SELECT faq_draft FROM users WHERE vk_id = $1', [ADMIN])).rows[0].faq_draft;
+        assert.equal(draft, null);
+    });
+
+    it('Отказ от черновика ничего не сохраняет', async () => {
+        await handleMessage(ctx(ADMIN, { command: 'faq_draft', ticket_id: ticketId }), vk, GROUP);
+        await handleMessage(ctx(ADMIN, { command: 'faq_cancel' }), vk, GROUP);
+
+        const faq = await db.query("SELECT count(*) FROM faq WHERE category = 'Тестовая категория'");
+        assert.equal(Number(faq.rows[0].count), 0);
+        const draft = (await db.query('SELECT faq_draft FROM users WHERE vk_id = $1', [ADMIN])).rows[0].faq_draft;
+        assert.equal(draft, null);
+    });
+
+    it('Чужой диалог разобрать нельзя', async () => {
+        await handleMessage(ctx(OTHER_ADMIN, { command: 'faq_draft', ticket_id: ticketId }), vk, GROUP);
+
+        assert.ok(String(lastMessage()).includes('вели не вы'), String(lastMessage()));
+        const draft = (await db.query('SELECT faq_draft FROM users WHERE vk_id = $1', [OTHER_ADMIN])).rows[0].faq_draft;
+        assert.equal(draft, null);
+    });
+
+    it('Студент не может дёрнуть кнопку подделанным payload', async () => {
+        await handleMessage(ctx(STUDENT, { command: 'faq_save' }), vk, GROUP);
+        assert.ok(String(lastMessage()).includes('только администраторам'), String(lastMessage()));
+    });
+
+    // Регрессия: при недоступном ИИ администратор не должен остаться без объяснения
+    it('Если ИИ недоступен — понятное сообщение и кнопка повтора', async () => {
+        aiService.draftFaqFromDialog = async () => { throw new Error('GigaChat API error 500'); };
+
+        await handleMessage(ctx(ADMIN, { command: 'faq_draft', ticket_id: ticketId }), vk, GROUP);
+
+        const msg = lastMessage();
+        assert.ok(String(msg.message).includes('ИИ сейчас недоступен'), String(msg.message));
+        assert.ok(keyboardOf(msg).includes('Попробовать ещё раз'));
+        const draft = (await db.query('SELECT faq_draft FROM users WHERE vk_id = $1', [ADMIN])).rows[0].faq_draft;
+        assert.equal(draft, null, 'черновика после сбоя быть не должно');
+    });
+
+    it('Кнопка сохранения без черновика не падает', async () => {
+        await handleMessage(ctx(ADMIN, { command: 'faq_save' }), vk, GROUP);
+        assert.ok(String(lastMessage()).includes('Черновик не найден'), String(lastMessage()));
+    });
+});

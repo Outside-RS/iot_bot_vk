@@ -4,6 +4,9 @@ const { db } = require('./database');
 const { getQueueStats } = require('./ai_worker');
 const { searchFaq, buildDialogHints, DIRECT_MIN_SCORE } = require('./faq_search');
 const { courseOfGroup, withCourse } = require('./courses');
+// Через объект модуля, а не через деструктуризацию: так разбор диалога
+// можно подменить заглушкой в тестах и не ходить в сеть
+const aiService = require('./ai_service');
 
 // ==================== Логи ====================
 // Теги: [BOT] — события диалога, [FSM] — состояние пользователя, [SEARCH] — поиск,
@@ -93,6 +96,86 @@ async function getTicketIfParticipant(ticketId, vkId) {
         [ticketId, vkId]
     );
     return res.rows[0] || null;
+}
+
+// ==================== Перенос диалога в базу знаний ====================
+// Диалог администратора со студентом — готовый материал для базы знаний:
+// вопрос уже задан живым языком, ответ уже проверен человеком. Разбирает
+// переписку GigaChat, но записывает её только после подтверждения администратором.
+
+/** Сколько последних диалогов показываем в истории */
+const DIALOG_HISTORY_LIMIT = 5;
+
+/** Переписка по обращению одним текстом — то, что уходит на разбор модели */
+async function buildDialogText(ticket) {
+    const messages = await db.query(
+        'SELECT sender_vk_id, text FROM messages WHERE ticket_id = $1 ORDER BY id ASC',
+        [ticket.id]
+    );
+    const lines = [`Вопрос студента: ${ticket.question}`];
+    for (const m of messages.rows) {
+        if (!m.text || !m.text.trim()) continue;
+        const who = String(m.sender_vk_id) === String(ticket.operator_vk_id) ? 'Администратор' : 'Студент';
+        lines.push(`${who}: ${m.text.trim()}`);
+    }
+    return lines.join('\n');
+}
+
+/** Кнопка «в базу знаний» под обращением */
+const faqDraftButton = (ticketId, label = '📚 Добавить в базу знаний') =>
+    Keyboard.builder().textButton({ label, payload: { command: 'faq_draft', ticket_id: ticketId }, color: Keyboard.POSITIVE_COLOR }).inline();
+
+/** Показ черновика администратору: что именно попадёт в базу знаний */
+function draftPreview(draft) {
+    return {
+        message: `📋 Черновик записи для базы знаний:\n\n`
+            + `Категория: ${draft.category}\n`
+            + `Вопрос: ${draft.question}\n\n`
+            + `Ответ: ${draft.answer}\n\n`
+            + `Ключевые слова: ${draft.keywords || '—'}\n\n`
+            + `Сохранить? После сохранения запись можно поправить в веб-админке.`,
+        keyboard: Keyboard.builder()
+            .textButton({ label: '✅ Сохранить', payload: { command: 'faq_save' }, color: Keyboard.POSITIVE_COLOR })
+            .textButton({ label: '🔄 Переделать', payload: { command: 'faq_retry' }, color: Keyboard.SECONDARY_COLOR })
+            .row()
+            .textButton({ label: '❌ Не сохранять', payload: { command: 'faq_cancel' }, color: Keyboard.NEGATIVE_COLOR })
+            .inline()
+    };
+}
+
+/**
+ * Разбирает переписку и показывает черновик. Сам в базу знаний ничего
+ * не пишет: администратор подтверждает запись кнопкой.
+ */
+async function prepareFaqDraft(context, senderId, ticketId) {
+    const ticketRes = await db.query(
+        "SELECT * FROM tickets WHERE id = $1 AND operator_vk_id = $2",
+        [ticketId, senderId]
+    );
+    if (ticketRes.rows.length === 0) {
+        console.warn(`[FAQ] Отказ: ${senderId} не вёл обращение #${ticketId}`);
+        return context.send('Это обращение вели не вы.');
+    }
+    const ticket = ticketRes.rows[0];
+
+    const dialogText = await buildDialogText(ticket);
+    await context.send('⏳ Читаю переписку и готовлю запись для базы знаний…');
+
+    let draft;
+    try {
+        const cats = await db.query("SELECT DISTINCT category FROM faq WHERE category IS NOT NULL AND category <> '' ORDER BY category");
+        draft = await aiService.draftFaqFromDialog(dialogText, cats.rows.map(r => r.category));
+    } catch (err) {
+        console.error(`[FAQ] Не удалось разобрать обращение #${ticketId}:`, err);
+        return context.send({
+            message: 'Не получилось разобрать переписку — ИИ сейчас недоступен. Можно попробовать ещё раз или добавить вопрос вручную в веб-админке.',
+            keyboard: faqDraftButton(ticketId, '🔄 Попробовать ещё раз')
+        });
+    }
+
+    await db.query('UPDATE users SET faq_draft = $1 WHERE vk_id = $2', [JSON.stringify({ ...draft, ticket_id: ticketId }), senderId]);
+    console.info(`[FAQ] ${senderId}: черновик по обращению #${ticketId} — «${preview(draft.question, 80)}»`);
+    return context.send(draftPreview(draft));
 }
 
 /** Администраторы, которым сейчас нужно слать уведомления о вопросах */
@@ -376,6 +459,40 @@ async function handleMessage(context, vk, groupId) {
                 await context.send({ message: `📝 Управление #${ticketId}`, keyboard: Keyboard.builder().textButton({ label: '✏️ Изменить текст', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '❌ Удалить заявку', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }) });
                 return;
             }
+            if (['faq_draft', 'faq_save', 'faq_retry', 'faq_cancel'].includes(messagePayload.command)) {
+                if (await getRole(senderId) !== 'operator') {
+                    console.warn(`[SECURITY] Отказ ${messagePayload.command}: ${senderId} не администратор — возможна подделка кнопки`);
+                    return context.send('Эта команда доступна только администраторам.');
+                }
+
+                if (messagePayload.command === 'faq_draft') {
+                    const ticketId = parseId(messagePayload.ticket_id);
+                    if (!ticketId) return context.send('Некорректный номер обращения.');
+                    return prepareFaqDraft(context, senderId, ticketId);
+                }
+
+                const stored = (await db.query('SELECT faq_draft FROM users WHERE vk_id = $1', [senderId])).rows[0];
+                const draft = stored && stored.faq_draft;
+                if (!draft) return context.send('Черновик не найден — начните заново из истории диалогов.');
+
+                if (messagePayload.command === 'faq_retry') {
+                    return prepareFaqDraft(context, senderId, draft.ticket_id);
+                }
+                if (messagePayload.command === 'faq_cancel') {
+                    await db.query('UPDATE users SET faq_draft = NULL WHERE vk_id = $1', [senderId]);
+                    console.info(`[FAQ] ${senderId}: черновик по обращению #${draft.ticket_id} отклонён`);
+                    return context.send('Хорошо, в базу знаний ничего не добавляю.');
+                }
+
+                // faq_save — записываем подтверждённый черновик
+                const saved = await db.query(
+                    'INSERT INTO faq (category, question, answer, keywords) VALUES ($1, $2, $3, $4) RETURNING id',
+                    [draft.category, draft.question, draft.answer, draft.keywords || null]
+                );
+                await db.query('UPDATE users SET faq_draft = NULL WHERE vk_id = $1', [senderId]);
+                console.info(`[FAQ] ${senderId}: запись #${saved.rows[0].id} добавлена в базу знаний из обращения #${draft.ticket_id}`);
+                return context.send(`✅ Добавлено в базу знаний (запись №${saved.rows[0].id}). Теперь бот отвечает на такой вопрос сам.`);
+            }
             if (messagePayload.command === 'toggle_notify') {
                 if (await getRole(senderId) !== 'operator') {
                     console.warn(`[SECURITY] Отказ toggle_notify: ${senderId} не администратор — возможна подделка кнопки`);
@@ -515,6 +632,14 @@ async function processState(context, user, vk, groupId) {
                 }
                 await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]);
                 await context.send(`Диалог по вопросу #${t.id} завершён.`);
+                if (closedByOperator) {
+                    // Предлагаем сразу, пока разговор свежий. Пропустил — вернётся
+                    // к нему через «История диалогов» в меню.
+                    await context.send({
+                        message: 'Пригодится другим студентам? Могу разобрать переписку и предложить запись для базы знаний.',
+                        keyboard: faqDraftButton(t.id)
+                    });
+                }
                 return mainMenu(context, user);
             }
             const activeT = (await db.query('SELECT * FROM tickets WHERE id = $1', [user.current_chat_ticket_id])).rows[0];
@@ -690,6 +815,28 @@ async function processState(context, user, vk, groupId) {
                         q.rows.forEach(t => { msg += `\n🆔 #${t.id} [${t.full_name}]: ${t.question}`; kb.textButton({ label: `Перейти к #${t.id}`, payload: { command: 'open_chat', ticket_id: t.id }, color: Keyboard.PRIMARY_COLOR }).row(); });
                         await context.send({ message: msg, keyboard: kb.inline() }); await mainMenu(context, user);
                     }
+                } else if (text === '📚 История диалогов') {
+                    // Завершённые обращения этого администратора: из любого можно
+                    // сделать запись базы знаний, даже если в момент завершения пропустили
+                    const closed = await db.query(
+                        `SELECT t.id, t.question, u.full_name
+                           FROM tickets t JOIN users u ON t.student_vk_id = u.vk_id
+                          WHERE t.operator_vk_id = $1 AND t.status = 'closed'
+                          ORDER BY t.id DESC LIMIT $2`,
+                        [senderId, DIALOG_HISTORY_LIMIT]
+                    );
+                    if (closed.rows.length === 0) {
+                        await context.send('Завершённых диалогов пока нет.');
+                    } else {
+                        let msg = '📚 Последние завершённые диалоги.\nВыберите, из какого сделать запись для базы знаний:\n';
+                        const kb = Keyboard.builder();
+                        closed.rows.forEach(t => {
+                            msg += `\n#${t.id} [${t.full_name}]: ${preview(t.question, 90)}`;
+                            kb.textButton({ label: `📚 В базу #${t.id}`, payload: { command: 'faq_draft', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR }).row();
+                        });
+                        await context.send({ message: msg, keyboard: kb.inline() });
+                    }
+                    await mainMenu(context, user);
                 } else if (text === '👤 Профиль') {
                     await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]);
                     await context.send(adminProfile(user));
@@ -758,7 +905,7 @@ async function mainMenu(context, user) {
     if (user.role === 'operator') {
         await context.send({
             message: 'Меню администратора:',
-            keyboard: Keyboard.builder().textButton({ label: '📥 Очередь вопросов', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '💬 Мои диалоги', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR }).textButton({ label: '⚠️ Жалоба / Отзыв', color: Keyboard.SECONDARY_COLOR })
+            keyboard: Keyboard.builder().textButton({ label: '📥 Очередь вопросов', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '💬 Мои диалоги', color: Keyboard.PRIMARY_COLOR }).textButton({ label: '📚 История диалогов', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR }).textButton({ label: '⚠️ Жалоба / Отзыв', color: Keyboard.SECONDARY_COLOR })
         });
     } else {
         await context.send({
@@ -874,4 +1021,4 @@ module.exports = createBotInstance;
 module.exports.isGroupAllowed = isGroupAllowed;
 module.exports.getAllowedGroupIds = getAllowedGroupIds;
 // Для тестов: обработчик сообщений без подключения к VK
-module.exports._test = { handleMessage, instrumentSend, reconcileStudentCourse, checkGroupAgainstCommunity, codeLockRemaining, registerCodeFailure, codeAttempts, enqueueAiTask, AI_QUESTION_MAX_LENGTH, LONG_WAIT_SECONDS };
+module.exports._test = { handleMessage, instrumentSend, reconcileStudentCourse, checkGroupAgainstCommunity, codeLockRemaining, registerCodeFailure, codeAttempts, enqueueAiTask, AI_QUESTION_MAX_LENGTH, LONG_WAIT_SECONDS, buildDialogText, prepareFaqDraft };

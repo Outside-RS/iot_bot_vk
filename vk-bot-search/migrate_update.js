@@ -38,6 +38,9 @@ const c = new Client({
     // им самим в профиле бота. По умолчанию включены — как было до настройки.
     await c.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_tickets BOOLEAN NOT NULL DEFAULT TRUE');
 
+    // Черновик записи базы знаний: администратор подтверждает его в боте
+    await c.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS faq_draft JSONB');
+
     // Перевод курса ищет студентов по сообществу
     await c.query('CREATE INDEX IF NOT EXISTS idx_users_vk_group ON users(vk_group_id)');
 
