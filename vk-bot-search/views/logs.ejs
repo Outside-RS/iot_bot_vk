@@ -1,266 +1,231 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Логи Бота — Админ-панель</title>
-    <link rel="stylesheet" href="/css/admin.css">
-    <style>
-        .terminal-container {
-            background-color: #0d1117;
-            color: #c9d1d9;
-            font-family: 'Courier New', Courier, monospace;
-            font-size: 13px;
-            padding: 16px 20px;
-            border-radius: var(--radius);
-            height: calc(100vh - 260px);
-            overflow-y: auto;
-            border: 1px solid var(--border-color);
-            margin-top: 14px;
-            box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
-        }
-        .log-line {
-            margin: 0;
-            padding: 2px 0;
-            word-wrap: break-word;
-            white-space: pre-wrap;
-        }
-        .log-line:hover { background-color: rgba(255,255,255,0.05); }
-        .log-time { color: #8b949e; margin-right: 8px; }
-        .log-level { display: inline-block; width: 52px; font-weight: bold; }
-        .log-tag { color: #d2a8ff; margin-right: 6px; }
-        .lvl-DEBUG .log-level { color: #6e7681; }
-        .lvl-DEBUG { color: #8b949e; }
-        .lvl-INFO .log-level { color: #58a6ff; }
-        .lvl-WARN .log-level { color: #d29922; }
-        .lvl-WARN { color: #e3b341; }
-        .lvl-ERROR .log-level { color: #f85149; }
-        .lvl-ERROR { color: #ff7b72; }
-        .has-stack { cursor: help; text-decoration: underline dotted rgba(255,123,114,.5); }
+<%- include('partials/layout_start', { title: 'Логи', active: '/logs' }) %>
 
-        .header-actions {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 12px;
-        }
-        .log-toolbar {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 10px;
-            color: var(--text-primary);
-        }
-        .log-toolbar select, .log-toolbar input[type="search"] {
-            padding: 6px 8px;
-            border-radius: var(--radius);
-            border: 1px solid var(--border-color);
-            background: var(--bg-secondary);
-            color: var(--text-primary);
-            font-family: inherit;
-        }
-        .log-toolbar input[type="search"] { min-width: 220px; }
-        .log-toolbar label { display: flex; align-items: center; gap: 6px; }
-        .log-counter { color: var(--text-secondary, #8b949e); font-size: 13px; }
-        .log-download { display: flex; align-items: center; gap: 6px; }
-    </style>
-</head>
-<body>
-    <nav class="nav">
-        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
-        <div class="nav-links">
-            <a href="/" class="nav-link">🏠 Главная</a>
-            <a href="/faq" class="nav-link">📚 База знаний</a>
-            <a href="/tutors" class="nav-link">👨‍🏫 Администраторы</a>
-            <a href="/groups" class="nav-link">📌 Группы VK</a>
-            <a href="/users" class="nav-link">👥 Пользователи</a>
-            <a href="/broadcast" class="nav-link">📢 Рассылка</a>
-            <a href="/feedback" class="nav-link">⚠️ Жалобы</a>
-            <a href="/logs" class="nav-link active">💻 Логи</a>
-        </div>
-        <div class="nav-right">
-            <a href="/logout" class="nav-logout">🚪 Выход</a>
-        </div>
-    </nav>
+<style>
+    .terminal {
+        background: #0a0e18;
+        border: 1px solid var(--border-soft);
+        border-radius: var(--radius-lg);
+        padding: 14px 16px;
+        height: calc(100vh - 260px);
+        min-height: 320px;
+        overflow: auto;
+        font-family: ui-monospace, "SF Mono", Consolas, "Liberation Mono", monospace;
+        font-size: 13px;
+        line-height: 1.55;
+    }
 
-    <div class="container">
-        <div class="header-actions">
-            <h1 class="page-title">💻 Терминал логов</h1>
-            <div class="log-download">
-                <select id="logDay" aria-label="Дата файла лога">
-                    <% if (logFiles.length === 0) { %>
-                        <option value="">Файлов пока нет</option>
-                    <% } %>
-                    <% logFiles.forEach(function (day) { %>
-                        <option value="<%= day %>"><%= day %></option>
-                    <% }); %>
-                </select>
-                <a id="logDownload" class="btn btn-sm" href="#">⬇️ Скачать файл</a>
-            </div>
-        </div>
+    .log-line {
+        white-space: pre-wrap;
+        word-break: break-word;
+        padding: 1px 0;
+    }
 
-        <div class="log-toolbar">
-            <label>Уровень
-                <select id="levelFilter">
-                    <option value="DEBUG">все, включая подробности</option>
-                    <option value="INFO" selected>события и выше</option>
-                    <option value="WARN">предупреждения и ошибки</option>
-                    <option value="ERROR">только ошибки</option>
-                </select>
+    .log-line:hover {
+        background: rgba(255, 255, 255, .04);
+    }
+
+    .log-time {
+        color: #8ea0c0;
+        margin-right: 8px;
+    }
+
+    .log-level {
+        display: inline-block;
+        width: 54px;
+        font-weight: 700;
+    }
+
+    .log-tag {
+        color: #cbb2ff;
+        margin-right: 6px;
+    }
+
+    .lvl-DEBUG .log-level { color: #8ea0c0; }
+    .lvl-INFO .log-level { color: var(--accent); }
+    .lvl-WARN .log-level { color: var(--warning); }
+    .lvl-ERROR .log-level { color: var(--danger); }
+    .lvl-ERROR { background: rgba(255, 107, 114, .08); }
+
+    .has-stack {
+        border-bottom: 1px dotted var(--text-faint);
+        cursor: help;
+    }
+</style>
+
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Логи</h1>
+        <div class="page-sub">Что происходило у бота — обновляется каждую секунду</div>
+    </div>
+    <div class="head-actions">
+        <select id="logDay" aria-label="Дата файла лога" style="width:auto">
+            <% if (logFiles.length === 0) { %><option value="">Файлов пока нет</option><% } %>
+            <% logFiles.forEach(function (day) { %><option value="<%= day %>"><%= day %></option><% }); %>
+        </select>
+        <a id="logDownload" class="btn btn-ghost" href="#">⬇️ Скачать файл за день</a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="toolbar">
+        <div class="form-group">
+            <label>Уровень</label>
+            <select id="levelFilter">
+                <option value="DEBUG">все, включая подробности</option>
+                <option value="INFO" selected>события и выше</option>
+                <option value="WARN">предупреждения и ошибки</option>
+                <option value="ERROR">только ошибки</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Подсистема</label>
+            <select id="tagFilter">
+                <option value="">все</option>
+            </select>
+        </div>
+        <div class="form-group grow">
+            <label>Поиск</label>
+            <input type="search" id="searchFilter" placeholder="VK ID, текст, номер обращения…">
+        </div>
+        <div class="form-group" style="flex:0 0 auto">
+            <label>&nbsp;</label>
+            <label class="btn btn-ghost" style="gap:10px">
+                <input type="checkbox" id="autoScroll" checked style="width:auto;min-height:auto"> Автопрокрутка
             </label>
-            <label>Подсистема
-                <select id="tagFilter">
-                    <option value="">все</option>
-                </select>
-            </label>
-            <input type="search" id="searchFilter" placeholder="Поиск: VK ID, текст, номер тикета…">
-            <label><input type="checkbox" id="autoScroll" checked> Автопрокрутка</label>
-            <span class="log-counter" id="counter"></span>
-        </div>
-
-        <div class="terminal-container" id="terminal">
-            <div id="logs-content">Загрузка логов...</div>
         </div>
     </div>
+    <div class="card-note" id="counter" style="margin-top:10px"></div>
+</div>
 
-    <script>
-        const LEVEL_RANK = { DEBUG: 10, INFO: 20, WARN: 30, ERROR: 40 };
-        const MAX_ENTRIES = 3000;
+<div class="terminal" id="terminal">
+    <div id="logs-content">Загрузка логов…</div>
+</div>
 
-        const terminal = document.getElementById('terminal');
-        const content = document.getElementById('logs-content');
-        const autoScroll = document.getElementById('autoScroll');
-        const levelFilter = document.getElementById('levelFilter');
-        const tagFilter = document.getElementById('tagFilter');
-        const searchFilter = document.getElementById('searchFilter');
-        const counter = document.getElementById('counter');
-        const logDay = document.getElementById('logDay');
-        const logDownload = document.getElementById('logDownload');
+<script>
+    const LEVEL_RANK = { DEBUG: 10, INFO: 20, WARN: 30, ERROR: 40 };
+    const MAX_ENTRIES = 3000;
+    const terminal = document.getElementById('terminal');
+    const content = document.getElementById('logs-content');
+    const autoScroll = document.getElementById('autoScroll');
+    const levelFilter = document.getElementById('levelFilter');
+    const tagFilter = document.getElementById('tagFilter');
+    const searchFilter = document.getElementById('searchFilter');
+    const counter = document.getElementById('counter');
+    const logDay = document.getElementById('logDay');
+    const logDownload = document.getElementById('logDownload');
+    let entries = [];
+    let lastId = 0;
+    const knownTags = new Set();
 
-        let entries = [];
-        let lastId = 0;
-        const knownTags = new Set();
+    function passes(e) {
+        if (LEVEL_RANK[e.level] < LEVEL_RANK[levelFilter.value]) return false;
+        if (tagFilter.value && e.tag !== tagFilter.value) return false;
+        const q = searchFilter.value.trim().toLowerCase();
+        if (q && !`${e.tag} ${e.msg}`.toLowerCase().includes(q)) return false;
+        return true;
+    }
 
-        function passes(e) {
-            if (LEVEL_RANK[e.level] < LEVEL_RANK[levelFilter.value]) return false;
-            if (tagFilter.value && e.tag !== tagFilter.value) return false;
-            const q = searchFilter.value.trim().toLowerCase();
-            if (q && !`${e.tag} ${e.msg}`.toLowerCase().includes(q)) return false;
-            return true;
+    // ВАЖНО: записи содержат текст, присланный пользователями бота.
+    // DOM строим только через textContent, никакого innerHTML — иначе
+    // сообщение вида <img src=x onerror=…> выполнится у администратора (XSS).
+    function buildLine(e) {
+        const div = document.createElement('div');
+        div.className = `log-line lvl-${e.level}`;
+        const time = document.createElement('span');
+        time.className = 'log-time';
+        time.textContent = e.ts;
+        const level = document.createElement('span');
+        level.className = 'log-level';
+        level.textContent = e.level;
+        const tag = document.createElement('span');
+        tag.className = 'log-tag';
+        tag.textContent = `[${e.tag}]`;
+        const msg = document.createElement('span');
+        msg.textContent = e.msg;
+        if (e.stack) {
+            // Стек вызовов — во всплывающей подсказке, чтобы не загромождать ленту
+            msg.title = e.stack;
+            msg.classList.add('has-stack');
         }
+        div.append(time, level, tag, msg);
+        return div;
+    }
 
-        // ВАЖНО: записи содержат текст, присланный пользователями бота.
-        // DOM строим только через textContent, никакого innerHTML — иначе
-        // сообщение вида <img src=x onerror=...> выполнится у администратора (XSS).
-        function buildLine(e) {
-            const div = document.createElement('div');
-            div.className = `log-line lvl-${e.level}`;
+    function updateCounter() {
+        counter.textContent = `показано ${content.childElementCount} из ${entries.length} записей`;
+    }
 
-            const time = document.createElement('span');
-            time.className = 'log-time';
-            time.textContent = e.ts;
+    function renderAll() {
+        const fragment = document.createDocumentFragment();
+        for (const e of entries) if (passes(e)) fragment.appendChild(buildLine(e));
+        content.replaceChildren(fragment);
+        updateCounter();
+        if (autoScroll.checked) terminal.scrollTop = terminal.scrollHeight;
+    }
 
-            const level = document.createElement('span');
-            level.className = 'log-level';
-            level.textContent = e.level;
+    function addTags(newEntries) {
+        let added = false;
+        for (const e of newEntries) {
+            if (!knownTags.has(e.tag)) { knownTags.add(e.tag); added = true; }
+        }
+        if (!added) return;
+        const current = tagFilter.value;
+        const options = [...knownTags].sort().map(t => {
+            const o = document.createElement('option');
+            o.value = t;
+            o.textContent = t;
+            return o;
+        });
+        const all = document.createElement('option');
+        all.value = '';
+        all.textContent = 'все';
+        tagFilter.replaceChildren(all, ...options);
+        tagFilter.value = current;
+    }
 
-            const tag = document.createElement('span');
-            tag.className = 'log-tag';
-            tag.textContent = `[${e.tag}]`;
-
-            const msg = document.createElement('span');
-            msg.textContent = e.msg;
-            if (e.stack) {
-                // Стек вызовов — во всплывающей подсказке, чтобы не загромождать ленту
-                msg.title = e.stack;
-                msg.classList.add('has-stack');
+    // Догружаем только новые записи (?since=), а не весь буфер каждую секунду
+    async function fetchLogs() {
+        try {
+            const res = await fetch(`/api/logs?since=${lastId}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            const fresh = data.entries || [];
+            if (fresh.length === 0) {
+                if (lastId === 0) content.textContent = 'Логов пока нет.';
+                return;
             }
-
-            div.append(time, level, tag, msg);
-            return div;
-        }
-
-        function updateCounter() {
-            const shown = content.childElementCount;
-            counter.textContent = `показано ${shown} из ${entries.length}`;
-        }
-
-        function renderAll() {
+            if (lastId === 0) content.replaceChildren();
+            lastId = fresh[fresh.length - 1].id;
+            entries.push(...fresh);
+            addTags(fresh);
+            if (entries.length > MAX_ENTRIES) {
+                entries = entries.slice(-MAX_ENTRIES);
+                renderAll();
+                return;
+            }
             const fragment = document.createDocumentFragment();
-            for (const e of entries) if (passes(e)) fragment.appendChild(buildLine(e));
-            content.replaceChildren(fragment);
+            for (const e of fresh) if (passes(e)) fragment.appendChild(buildLine(e));
+            content.appendChild(fragment);
             updateCounter();
             if (autoScroll.checked) terminal.scrollTop = terminal.scrollHeight;
+        } catch (e) {
+            console.error('Ошибка обновления логов', e);
         }
+    }
 
-        function addTags(newEntries) {
-            let added = false;
-            for (const e of newEntries) {
-                if (!knownTags.has(e.tag)) { knownTags.add(e.tag); added = true; }
-            }
-            if (!added) return;
-            const current = tagFilter.value;
-            const options = [...knownTags].sort().map(t => {
-                const o = document.createElement('option');
-                o.value = t;
-                o.textContent = t;
-                return o;
-            });
-            const all = document.createElement('option');
-            all.value = '';
-            all.textContent = 'все';
-            tagFilter.replaceChildren(all, ...options);
-            tagFilter.value = current;
-        }
+    function updateDownloadLink() {
+        logDownload.href = logDay.value ? `/logs/download/${encodeURIComponent(logDay.value)}` : '#';
+    }
 
-        // Догружаем только новые записи (?since=), а не весь буфер каждую секунду
-        async function fetchLogs() {
-            try {
-                const res = await fetch(`/api/logs?since=${lastId}`);
-                if (!res.ok) return;
-                const data = await res.json();
-                const fresh = data.entries || [];
-                if (fresh.length === 0) {
-                    if (lastId === 0) { content.textContent = 'Логов пока нет.'; }
-                    return;
-                }
-                if (lastId === 0) content.replaceChildren();
+    document.addEventListener('DOMContentLoaded', () => {
+        levelFilter.addEventListener('change', renderAll);
+        tagFilter.addEventListener('change', renderAll);
+        searchFilter.addEventListener('input', renderAll);
+        logDay.addEventListener('change', updateDownloadLink);
+        updateDownloadLink();
+        fetchLogs();
+        setInterval(fetchLogs, 1000);
+    });
+</script>
 
-                lastId = fresh[fresh.length - 1].id;
-                entries.push(...fresh);
-                addTags(fresh);
-
-                if (entries.length > MAX_ENTRIES) {
-                    entries = entries.slice(-MAX_ENTRIES);
-                    renderAll();
-                    return;
-                }
-
-                const fragment = document.createDocumentFragment();
-                for (const e of fresh) if (passes(e)) fragment.appendChild(buildLine(e));
-                content.appendChild(fragment);
-                updateCounter();
-                if (autoScroll.checked) terminal.scrollTop = terminal.scrollHeight;
-            } catch (e) {
-                console.error('Ошибка обновления логов', e);
-            }
-        }
-
-        function updateDownloadLink() {
-            logDownload.href = logDay.value ? `/logs/download/${encodeURIComponent(logDay.value)}` : '#';
-        }
-
-        document.addEventListener('DOMContentLoaded', () => {
-            levelFilter.addEventListener('change', renderAll);
-            tagFilter.addEventListener('change', renderAll);
-            searchFilter.addEventListener('input', renderAll);
-            logDay.addEventListener('change', updateDownloadLink);
-            updateDownloadLink();
-
-            fetchLogs();
-            setInterval(fetchLogs, 1000);
-        });
-    </script>
-</body>
-</html>
+<%- include('partials/layout_end') %>

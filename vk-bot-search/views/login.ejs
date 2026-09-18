@@ -8,18 +8,23 @@
     <link rel="stylesheet" href="/css/admin.css">
 </head>
 
-<body class="login-page">
-    <div class="login-box">
-        <h2>🔐 Вход в админку</h2>
-        <% if (error) { %>
-            <div class="login-error">
-                <%= error %>
-            </div>
+<body>
+    <div class="login-page">
+        <form class="login-box" action="/login" method="POST">
+            <h1>🤖 IOT Bot</h1>
+            <div class="hint">Панель управления ботом ИОТ</div>
+
+            <% if (error) { %>
+                <div class="alert alert-error"><%= error %></div>
             <% } %>
-                <form action="/login" method="POST">
-                    <input type="password" name="password" placeholder="Пароль администратора" required>
-                    <button type="submit" class="btn btn-primary">Войти</button>
-                </form>
+
+            <div class="form-group">
+                <label for="password">Пароль администратора</label>
+                <input type="password" id="password" name="password" placeholder="Введите пароль" required autofocus>
+            </div>
+
+            <button type="submit" class="btn btn-primary" style="width:100%">Войти</button>
+        </form>
     </div>
 </body>
 

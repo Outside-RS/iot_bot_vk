@@ -1,247 +1,183 @@
-<!DOCTYPE html>
-<html lang="ru">
+<%- include('partials/layout_start', { title: 'База знаний', active: '/faq' }) %>
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>База Знаний — Админ-панель</title>
-    <link rel="stylesheet" href="/css/admin.css">
-    <meta name="csrf-token" content="<%= csrfToken %>">
-</head>
-
-<body>
-    <!-- Toast Уведомление -->
-    <div id="toast" class="toast-notification"></div>
-
-    <!-- Навигация -->
-    <nav class="nav">
-        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
-        <div class="nav-links">
-            <a href="/" class="nav-link">🏠 Главная</a>
-            <a href="/faq" class="nav-link active">📚 База знаний</a>
-            <a href="/tutors" class="nav-link">👨‍🏫 Администраторы</a>
-            <a href="/groups" class="nav-link">📌 Группы VK</a>
-            <a href="/users" class="nav-link">👥 Пользователи</a>
-            <a href="/broadcast" class="nav-link">📢 Рассылка</a>
-                    <a href="/feedback" class="nav-link<%= typeof currentRoute !== "undefined" && currentRoute === "/feedback" ? " active" : "" %>">⚠️ Жалобы</a>
-            <a href="/logs" class="nav-link<%= typeof currentRoute !== "undefined" && currentRoute === "/logs" ? " active" : "" %>">💻 Логи</a>
-</div>
-        <div class="nav-right">
-            <a href="/logout" class="nav-logout">🚪 Выход</a>
-        </div>
-    </nav>
-
-    <div class="container">
-        <h1 class="page-title">📚 База Знаний</h1>
-
-        <% if (error) { %>
-            <div class="alert alert-error">
-                <%= error %>
-            </div>
-            <% } %>
-                <% if (success) { %>
-                    <div class="alert alert-success">
-                        <%= success %>
-                    </div>
-                    <% } %>
-
-                        <!-- Импорт из файла -->
-                        <div class="card">
-                            <div class="card-header">📥 Импорт из JSON-файла</div>
-                            <div style="display: flex; align-items: center; gap: 12px; padding: 4px 0 8px;">
-                                <input type="file" id="importFile" accept=".json" style="flex: 1;">
-                                <button class="btn btn-primary" id="importFaqBtn" style="white-space: nowrap;">📥 Импортировать</button>
-                            </div>
-                            <div id="importResult" style="display: none; margin-top: 8px;"></div>
-                        </div>
-
-                        <!-- Форма добавления -->
-                        <div class="card">
-                            <div class="card-header">➕ Добавить новый вопрос</div>
-                            <form action="/faq/add" method="POST">
-                                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                                <datalist id="faq-categories">
-                                    <% categories.forEach(function(cat) { %>
-                                        <option value="<%= cat %>">
-                                    <% }); %>
-                                </datalist>
-                                <div class="form-row">
-                                    <div class="form-group" style="flex: 1;">
-                                        <label>Категория</label>
-                                        <input type="text" name="category" list="faq-categories" autocomplete="off" placeholder="Например: Стипендия" required>
-                                    </div>
-                                    <div class="form-group" style="flex: 2;">
-                                        <label>Вопрос студента</label>
-                                        <input type="text" name="question"
-                                            placeholder="Как получить социальную стипендию?" required>
-                                    </div>
-                                </div>
-
-                                <div class="form-group">
-                                    <label>Ответ бота</label>
-                                    <textarea name="answer" rows="4"
-                                        placeholder="Для получения социальной стипендии необходимо..."
-                                        required></textarea>
-                                </div>
-
-                                <div class="form-group">
-                                    <label>Ключевые слова <small style="color: var(--text-muted);">— фразы через запятую</small></label>
-                                    <input type="text" name="keywords" placeholder="социальная стипендия, выплата, банковская карта">
-                                </div>
-
-                                <button type="submit" class="btn btn-success">💾 Сохранить</button>
-                            </form>
-                        </div>
-
-                        <!-- Таблица FAQ -->
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                            <h2 style="color: var(--text-secondary);">Всего вопросов: <span id="faqVisibleCount"><%= faq.length %></span></h2>
-                            <div style="display: flex; align-items: center; gap: 12px;">
-                                <% if (categories.length > 0) { %>
-                                <select id="categoryFilter" style="width: auto;">
-                                    <option value="">Все категории</option>
-                                    <% categories.forEach(function(cat) { %>
-                                        <option value="<%= cat %>"><%= cat %></option>
-                                    <% }); %>
-                                </select>
-                                <% } %>
-                                <form action="/faq/export-json" method="POST" data-confirm="Перезаписать faq_data.json данными из БД?" >
-                                    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                                    <button type="submit" class="btn btn-warning" style="white-space: nowrap;">💾 Экспорт в файл</button>
-                                </form>
-                                <a href="/faq/download-json" class="btn btn-success" style="white-space: nowrap;">⬇️ Скачать базу</a>
-                            </div>
-                        </div>
-
-                        <div class="table-container">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th style="width: 5%;">ID</th>
-                                        <th style="width: 12%;">Категория</th>
-                                        <th style="width: 25%;">Вопрос</th>
-                                        <th style="width: 48%;">Ответ</th>
-                                        <th style="width: 10%;">Действия</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <% if (faq.length===0) { %>
-                                        <tr>
-                                            <td colspan="5" class="empty-state">
-                                                <div class="icon">📭</div>
-                                                Нет вопросов в базе знаний
-                                            </td>
-                                        </tr>
-                                        <% } else { %>
-                                            <% faq.forEach(function(item) { %>
-                                                <tr data-category="<%= item.category %>">
-                                                    <td>
-                                                        <%= item.id %>
-                                                    </td>
-                                                    <td><span class="badge badge-info">
-                                                            <%= item.category %>
-                                                        </span></td>
-                                                    <td>
-                                                        <b>
-                                                            <%= item.question %>
-                                                        </b>
-                                                        <% if (item.keywords) { %>
-                                                            <br><small style="color: var(--text-muted);">🔑 <%=
-                                                                    item.keywords %></small>
-                                                            <% } %>
-                                                    </td>
-                                                    <td><small>
-                                                            <%= item.answer %>
-                                                        </small></td>
-                                                    <td class="actions">
-                                                        <a href="/faq/edit/<%= item.id %>" class="action-btn edit"
-                                                            title="Редактировать">✏️</a>
-                                                        <form action="/faq/delete/<%= item.id %>" method="POST"
-                                                            data-confirm="Удалить этот вопрос?" style="display:inline;">
-                                                            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                                                            <button type="submit" class="action-btn delete"
-                                                                title="Удалить">🗑</button>
-                                                        </form>
-                                                    </td>
-                                                </tr>
-                                                <% }); %>
-                                                    <% } %>
-                                </tbody>
-                            </table>
-                        </div>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">База знаний</h1>
+        <div class="page-sub">Вопросы, по которым бот отвечает сам</div>
     </div>
+    <div class="head-actions">
+        <button class="btn btn-primary" id="addToggle">➕ Добавить вопрос</button>
+        <a href="/faq/download-json" class="btn btn-ghost">⬇️ Скачать базу</a>
+        <button class="btn btn-ghost" id="importToggle">📥 Импорт</button>
+        <form action="/faq/export-json" method="POST" data-confirm="Перезаписать faq_data.json данными из базы?">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+            <button type="submit" class="btn btn-ghost">💾 Экспорт в файл</button>
+        </form>
+    </div>
+</div>
 
-    <script>
-        // Токен для изменяющих AJAX-запросов (см. CSRF-middleware в index.js)
-        const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
-        function filterByCategory(value) {
-            const rows = document.querySelectorAll('tbody tr[data-category]');
-            let visible = 0;
-            rows.forEach(function(row) {
-                const match = !value || row.dataset.category === value;
-                row.style.display = match ? '' : 'none';
-                if (match) visible++;
+<% if (error) { %><div class="alert alert-error"><%= error %></div><% } %>
+<% if (success) { %><div class="alert alert-success"><%= success %></div><% } %>
+
+<!-- Добавление вопроса: свёрнуто, чтобы список был виден сразу -->
+<div class="card" id="addCard" hidden>
+    <div class="card-head">➕ Новый вопрос</div>
+    <form action="/faq/add" method="POST">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <datalist id="faq-categories">
+            <% categories.forEach(function (cat) { %><option value="<%= cat %>"><% }); %>
+        </datalist>
+        <div class="form-row">
+            <div class="form-group" style="flex:1 1 200px">
+                <label>Категория</label>
+                <input type="text" name="category" list="faq-categories" autocomplete="off" placeholder="Например: Стипендия" required>
+            </div>
+            <div class="form-group" style="flex:2 1 320px">
+                <label>Вопрос студента</label>
+                <input type="text" name="question" placeholder="Как получить социальную стипендию?" required>
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Ответ бота</label>
+            <textarea name="answer" rows="4" placeholder="Для получения социальной стипендии нужно…" required></textarea>
+        </div>
+        <div class="form-group">
+            <label>Ключевые слова <span class="hint">— фразы через запятую, помогают поиску</span></label>
+            <input type="text" name="keywords" placeholder="социальная стипендия, выплата, банковская карта">
+        </div>
+        <button type="submit" class="btn btn-success">💾 Сохранить</button>
+    </form>
+</div>
+
+<!-- Импорт из файла -->
+<div class="card" id="importCard" hidden>
+    <div class="card-head">📥 Импорт из JSON-файла</div>
+    <div class="toolbar">
+        <div class="form-group grow">
+            <label>Файл с вопросами</label>
+            <input type="file" id="importFile" accept=".json">
+        </div>
+        <button class="btn btn-primary" id="importFaqBtn">📥 Импортировать</button>
+    </div>
+</div>
+
+<!-- Поиск и фильтр -->
+<form class="card" method="GET" action="/faq">
+    <div class="toolbar">
+        <div class="form-group grow">
+            <label>Поиск по вопросам, ответам и ключевым словам</label>
+            <input type="search" name="q" value="<%= search %>" placeholder="стипендия, общежитие, пересдача…">
+        </div>
+        <div class="form-group">
+            <label>Категория</label>
+            <select name="category" data-autosubmit>
+                <option value="">Все категории</option>
+                <% categories.forEach(function (cat) { %>
+                    <option value="<%= cat %>" <%= category === cat ? 'selected' : '' %>><%= cat %></option>
+                <% }); %>
+            </select>
+        </div>
+        <button type="submit" class="btn btn-primary">Найти</button>
+        <% if (search || category) { %><a href="/faq" class="btn btn-ghost">Сбросить</a><% } %>
+    </div>
+</form>
+
+<%- include('partials/pager', { page, queryString, baseUrl: '/faq', unit: 'вопросов' }) %>
+
+<div class="table-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:70px">ID</th>
+                <th style="width:150px">Категория</th>
+                <th style="width:32%">Вопрос</th>
+                <th>Ответ</th>
+                <th class="nowrap" style="width:110px">Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            <% if (faq.length === 0) { %>
+                <tr>
+                    <td colspan="5" class="empty">
+                        <span class="ico">📭</span>
+                        <%= search || category ? 'Ничего не нашлось — измените запрос' : 'В базе знаний пока нет вопросов' %>
+                    </td>
+                </tr>
+            <% } else { %>
+                <% faq.forEach(function (item) { %>
+                    <tr>
+                        <td class="mono"><%= item.id %></td>
+                        <td><span class="badge badge-info"><%= item.category %></span></td>
+                        <td>
+                            <span class="cell-main"><%= item.question %></span>
+                            <% if (item.keywords) { %><span class="cell-sub">🔑 <%= item.keywords %></span><% } %>
+                        </td>
+                        <td><div class="clip"><%= item.answer %></div></td>
+                        <td>
+                            <div class="row-actions">
+                                <a href="/faq/edit/<%= item.id %>" class="icon-btn" title="Редактировать">✏️</a>
+                                <form action="/faq/delete/<%= item.id %>" method="POST" data-confirm="Удалить этот вопрос?">
+                                    <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+                                    <button type="submit" class="icon-btn danger" title="Удалить">🗑</button>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                <% }); %>
+            <% } %>
+        </tbody>
+    </table>
+</div>
+
+<%- include('partials/pager', { page, queryString, baseUrl: '/faq', unit: 'вопросов' }) %>
+
+<script>
+    // Токен для изменяющих AJAX-запросов (см. CSRF-middleware в index.js)
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+
+    async function importFaq(btn) {
+        const file = document.getElementById('importFile').files[0];
+        if (!file) return showToast('Выберите JSON-файл', 'error');
+
+        let data;
+        try {
+            data = JSON.parse(await file.text());
+        } catch (e) {
+            return showToast('Файл не является правильным JSON: ' + e.message, 'error');
+        }
+        if (!Array.isArray(data)) return showToast('В файле должен быть массив объектов', 'error');
+
+        btn.disabled = true;
+        btn.textContent = '⏳ Импорт…';
+        try {
+            const res = await fetch('/faq/import-json', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+                body: JSON.stringify(data)
             });
-            document.getElementById('faqVisibleCount').textContent = visible;
+            const result = await res.json();
+            if (!result.success) throw new Error(result.error || 'Неизвестная ошибка');
+            showToast(`Добавлено ${result.added}, обновлено ${result.updated}, пропущено ${result.skipped}`);
+            setTimeout(() => location.reload(), 1800);
+        } catch (e) {
+            showToast('Не удалось импортировать: ' + e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '📥 Импортировать';
         }
+    }
 
-        function showToast(message, type = 'success') {
-            const toast = document.getElementById('toast');
-            toast.textContent = message;
-            toast.className = `toast-notification show ${type}`;
-            setTimeout(() => {
-                toast.className = toast.className.replace('show', '');
-            }, 3000);
-        }
-
-        async function importFaq(btn) {
-            const file = document.getElementById('importFile').files[0];
-            if (!file) return alert('Выберите JSON-файл');
-
-            let data;
-            try {
-                data = JSON.parse(await file.text());
-            } catch (e) {
-                return alert('Файл не является валидным JSON: ' + e.message);
-            }
-
-            if (!Array.isArray(data)) return alert('JSON должен быть массивом объектов.');
-
-            btn.disabled = true;
-            btn.textContent = '⏳ Импорт...';
-
-            try {
-                const res = await fetch('/faq/import-json', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-                    body: JSON.stringify(data)
-                });
-                const result = await res.json();
-
-                if (result.success) {
-                    showToast(`FAQ import: добавлено ${result.added}, обновлено ${result.updated}, пропущено ${result.skipped}`, 'success');
-                    setTimeout(() => location.reload(), 2000);
-                } else {
-                    showToast('❌ ' + (result.error || 'Неизвестная ошибка'), 'error');
-                }
-            } catch (e) {
-                showToast('Ошибка при отправке: ' + e.message, 'error');
-            } finally {
-                btn.disabled = false;
-                btn.textContent = '📥 Импортировать';
-            }
-        }
-    </script>
-    <script src="/js/ui.js"></script>
-    <script>
-        // Обработчики вынесены из onclick/onchange (CSP: script-src-attr 'none')
-        document.addEventListener('DOMContentLoaded', () => {
-            const importBtn = document.getElementById('importFaqBtn');
-            importBtn.addEventListener('click', () => importFaq(importBtn));
-            const filter = document.getElementById('categoryFilter');
-            filter.addEventListener('change', () => filterByCategory(filter.value));
+    // Обработчики вынесены из атрибутов (CSP: script-src-attr 'none')
+    document.addEventListener('DOMContentLoaded', () => {
+        const toggle = (btn, card) => btn.addEventListener('click', () => {
+            card.hidden = !card.hidden;
+            if (!card.hidden) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         });
-    </script>
-</body>
+        toggle(document.getElementById('addToggle'), document.getElementById('addCard'));
+        toggle(document.getElementById('importToggle'), document.getElementById('importCard'));
+        const importBtn = document.getElementById('importFaqBtn');
+        importBtn.addEventListener('click', () => importFaq(importBtn));
+    });
+</script>
 
-</html>
+<%- include('partials/layout_end') %>

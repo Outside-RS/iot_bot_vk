@@ -1,0 +1,40 @@
+<%#
+    Постраничный вывод. Ожидает:
+      page        — { page, pages, total, size, offset }
+      queryString — текущие параметры запроса без page, с '&' на конце
+      baseUrl     — адрес раздела, например '/faq'
+      unit        — что считаем: 'вопросов', 'пользователей', 'записей'
+%>
+<% if (page.total > 0) { %>
+    <div class="pager">
+        <div>
+            Показаны <%= page.offset + 1 %>–<%= Math.min(page.offset + page.size, page.total) %>
+            из <%= page.total %> <%= unit %>
+        </div>
+        <% if (page.pages > 1) { %>
+            <div class="pager-links">
+                <% if (page.page > 1) { %>
+                    <a href="<%= baseUrl %>?<%= queryString %>page=<%= page.page - 1 %>" aria-label="Назад">‹</a>
+                <% } %>
+                <%
+                    // Показываем первую, последнюю и соседние страницы
+                    const shown = new Set([1, page.pages, page.page, page.page - 1, page.page + 1]);
+                    let prev = 0;
+                %>
+                <% for (let n = 1; n <= page.pages; n++) { %>
+                    <% if (!shown.has(n)) continue; %>
+                    <% if (n - prev > 1) { %><span class="gap">…</span><% } %>
+                    <% if (n === page.page) { %>
+                        <span class="current"><%= n %></span>
+                    <% } else { %>
+                        <a href="<%= baseUrl %>?<%= queryString %>page=<%= n %>"><%= n %></a>
+                    <% } %>
+                    <% prev = n; %>
+                <% } %>
+                <% if (page.page < page.pages) { %>
+                    <a href="<%= baseUrl %>?<%= queryString %>page=<%= page.page + 1 %>" aria-label="Вперёд">›</a>
+                <% } %>
+            </div>
+        <% } %>
+    </div>
+<% } %>

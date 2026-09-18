@@ -1,110 +1,74 @@
-<!DOCTYPE html>
-<html lang="ru">
+<%- include('partials/layout_start', { title: 'Рассылка', active: '/broadcast' }) %>
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Рассылка — Админ-панель</title>
-    <link rel="stylesheet" href="/css/admin.css">
-</head>
-
-<body>
-    <!-- Навигация -->
-    <nav class="nav">
-        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
-        <div class="nav-links">
-            <a href="/" class="nav-link">🏠 Главная</a>
-            <a href="/faq" class="nav-link">📚 База знаний</a>
-            <a href="/tutors" class="nav-link">👨‍🏫 Администраторы</a>
-            <a href="/groups" class="nav-link">📌 Группы VK</a>
-            <a href="/users" class="nav-link">👥 Пользователи</a>
-            <a href="/broadcast" class="nav-link active">📢 Рассылка</a>
-                    <a href="/feedback" class="nav-link<%= typeof currentRoute !== "undefined" && currentRoute === "/feedback" ? " active" : "" %>">⚠️ Жалобы</a>
-            <a href="/logs" class="nav-link<%= typeof currentRoute !== "undefined" && currentRoute === "/logs" ? " active" : "" %>">💻 Логи</a>
-</div>
-        <div class="nav-right">
-            <a href="/logout" class="nav-logout">🚪 Выход</a>
-        </div>
-    </nav>
-
-    <div class="container" style="max-width: 800px;">
-        <h1 class="page-title">📢 Массовая рассылка</h1>
-
-        <div class="info-box">
-            ℹ️ Сообщение будет отправлено <b>всем</b> пользователям бота (студентам и администраторам).<br>
-            Рассылка идет постепенно (20 сообщений в секунду), чтобы ВК не заблокировал бота.
-        </div>
-
-        <div class="card">
-            <form action="/broadcast/send" method="POST" data-confirm="Вы уверены?" >
-                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-
-                <div class="form-group">
-                    <label><b>Кому отправить?</b></label>
-                    <div class="radio-group">
-                        <label class="radio-label">
-                            <input type="radio" name="target" value="all" checked>
-                            Все пользователи
-                        </label>
-                        <label class="radio-label">
-                            <input type="radio" name="target" value="students">
-                            Только Студенты
-                        </label>
-                        <label class="radio-label">
-                            <input type="radio" name="target" value="tutors">
-                            Только Администраторы
-                        </label>
-                        <label class="radio-label">
-                            <input type="radio" name="target" value="group">
-                            Конкретная группа
-                        </label>
-                    </div>
-                </div>
-
-                <div id="groupInput" style="display: none;" class="form-group">
-                    <label>Номер группы</label>
-                    <input type="text" name="group_number" placeholder="Введите номер группы (например, РИ-140944)">
-                </div>
-
-                <div class="form-group">
-                    <label><b>От имени какой группы VK?</b></label>
-                    <select name="vk_group_id">
-                        <% if (groups && groups.length> 0) { %>
-                            <% groups.forEach(function(g) { %>
-                                <option value="<%= g.group_id %>">
-                                    <%= g.group_name %>
-                                </option>
-                                <% }); %>
-                                    <% } else { %>
-                                        <option value="">Нет активных групп</option>
-                                        <% } %>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label><b>Текст сообщения</b></label>
-                    <textarea name="message" rows="6" placeholder="Уважаемые студенты..." required></textarea>
-                </div>
-
-                <button type="submit" class="btn btn-warning" style="width: 100%; justify-content: center;">
-                    🚀 Отправить рассылку
-                </button>
-            </form>
-        </div>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Рассылка</h1>
+        <div class="page-sub">Сообщение уходит всем выбранным пользователям бота</div>
     </div>
+</div>
 
-    <script>
-        // Переключение поля «номер группы» — вынесено из onclick (CSP)
-        document.addEventListener('DOMContentLoaded', () => {
-            document.querySelectorAll('input[name="target"]').forEach(radio => {
-                radio.addEventListener('change', () => toggleGroupInput(radio.value === 'group'));
-            });
+<div class="alert alert-warning">
+    Отправка идёт постепенно, около 20 сообщений в секунду, чтобы ВКонтакте не заблокировал сообщество.
+    Отменить начатую рассылку нельзя.
+</div>
+
+<div class="card" style="max-width:860px">
+    <form action="/broadcast/send" method="POST" data-confirm="Отправить сообщение выбранным пользователям?">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+
+        <div class="form-group">
+            <label>Кому отправить</label>
+            <div class="form-row">
+                <label class="btn btn-ghost" style="flex:1 1 160px; justify-content:flex-start; gap:10px">
+                    <input type="radio" name="target" value="all" checked style="width:auto;min-height:auto"> Всем
+                </label>
+                <label class="btn btn-ghost" style="flex:1 1 160px; justify-content:flex-start; gap:10px">
+                    <input type="radio" name="target" value="students" style="width:auto;min-height:auto"> Студентам
+                </label>
+                <label class="btn btn-ghost" style="flex:1 1 160px; justify-content:flex-start; gap:10px">
+                    <input type="radio" name="target" value="tutors" style="width:auto;min-height:auto"> Администраторам
+                </label>
+                <label class="btn btn-ghost" style="flex:1 1 160px; justify-content:flex-start; gap:10px">
+                    <input type="radio" name="target" value="group" style="width:auto;min-height:auto"> Одной группе
+                </label>
+            </div>
+        </div>
+
+        <div class="form-group" id="groupInput" hidden>
+            <label>Номер группы</label>
+            <input type="text" name="group_number" placeholder="РИ-140944">
+        </div>
+
+        <div class="form-group">
+            <label>От имени сообщества</label>
+            <select name="vk_group_id">
+                <% if (groups && groups.length > 0) { %>
+                    <% groups.forEach(function (g) { %>
+                        <option value="<%= g.group_id %>"><%= g.group_name %></option>
+                    <% }); %>
+                <% } else { %>
+                    <option value="">Нет подключённых сообществ</option>
+                <% } %>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label>Текст сообщения</label>
+            <textarea name="message" rows="7" placeholder="Уважаемые студенты…" required></textarea>
+        </div>
+
+        <button type="submit" class="btn btn-warning" style="width:100%">🚀 Отправить рассылку</button>
+    </form>
+</div>
+
+<script>
+    // Поле «номер группы» показываем только для рассылки одной группе (CSP: без onclick)
+    document.addEventListener('DOMContentLoaded', () => {
+        const field = document.getElementById('groupInput');
+        document.querySelectorAll('input[name="target"]').forEach(radio => {
+            radio.addEventListener('change', () => { field.hidden = radio.value !== 'group'; });
         });
-        function toggleGroupInput(show) {
-            document.getElementById('groupInput').style.display = show ? 'block' : 'none';
-        }
-    </script>
-    <script src="/js/ui.js"></script>
-</body>
+    });
+</script>
 
-</html>
+<%- include('partials/layout_end') %>

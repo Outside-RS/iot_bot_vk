@@ -14,4 +14,31 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-autosubmit]').forEach(field => {
         field.addEventListener('change', () => field.form && field.form.submit());
     });
+
+    // Боковое меню на телефоне: открывается кнопкой, закрывается затемнением
+    const sidebar = document.getElementById('sidebar');
+    const scrim = document.getElementById('scrim');
+    const burger = document.getElementById('burger');
+    const closeMenu = () => {
+        sidebar && sidebar.classList.remove('open');
+        scrim && scrim.classList.remove('open');
+    };
+    if (burger && sidebar && scrim) {
+        burger.addEventListener('click', () => {
+            sidebar.classList.toggle('open');
+            scrim.classList.toggle('open');
+        });
+        scrim.addEventListener('click', closeMenu);
+        document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMenu(); });
+    }
 });
+
+/** Короткое сообщение в углу экрана вместо alert() */
+function showToast(message, type = 'success') {
+    const toast = document.getElementById('toast');
+    if (!toast) return alert(message);
+    toast.textContent = message;
+    toast.className = `toast show ${type}`;
+    clearTimeout(showToast._timer);
+    showToast._timer = setTimeout(() => { toast.className = 'toast'; }, 3500);
+}

@@ -1,516 +1,340 @@
-<!DOCTYPE html>
-<html lang="ru">
+<%- include('partials/layout_start', { title: 'Обзор', active: '/' }) %>
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Дашборд — Админ-панель</title>
-    <link rel="stylesheet" href="/css/admin.css">
-    <style>
-        .test-code-warning {
-            background: #3a2a12;
-            border: 1px solid #b8860b;
-            border-left: 4px solid #ffb020;
-            color: #ffd591;
-            padding: 14px 18px;
-            border-radius: 8px;
-            margin-bottom: 22px;
-        }
-        .backup-state { font-size: 20px; font-weight: 600; margin: 6px 0 4px; }
-        .backup-state.success { color: #3ba55d; }
-        .backup-state.danger { color: #d83c3e; }
-        .test-code-warning p { margin: 6px 0 0; font-size: 14px; line-height: 1.5; }
-        .test-code-warning code { background: rgba(0,0,0,.35); padding: 1px 5px; border-radius: 4px; }
-        .test-code-warning a { color: #ffb020; }
-    </style>
-    <meta name="csrf-token" content="<%= csrfToken %>">
-    <style>
-        .quota-box { background: rgba(255,255,255,.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
-        .quota-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-        .quota-title { font-size: 13px; opacity: .8; }
-        .quota-refresh {
-            width: 28px; height: 28px; border-radius: 6px; flex-shrink: 0;
-            border: 1px solid var(--border-color); background: transparent; color: inherit;
-            font-size: 16px; line-height: 1; cursor: pointer; opacity: .75;
-            transition: opacity .15s, background .15s;
-        }
-        .quota-refresh:hover { opacity: 1; background: rgba(255,255,255,.06); }
-        .quota-refresh:disabled { cursor: default; opacity: .5; }
-        .quota-refresh.spinning { animation: quota-spin .8s linear infinite; }
-        @keyframes quota-spin { to { transform: rotate(360deg); } }
-        .quota-sync { font-size: 12px; opacity: .6; margin-top: 4px; }
-        .quota-sync.ok { color: #3ba55d; opacity: .9; }
-        .quota-sync.fail { color: #d83c3e; opacity: .9; }
-        .quota-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 13px; }
-        .quota-row .name { width: 150px; flex-shrink: 0; }
-        .quota-bar { flex: 1; height: 6px; background: rgba(255,255,255,.08); border-radius: 3px; overflow: hidden; }
-        .quota-fill { height: 100%; background: #3ba55d; }
-        .quota-fill.warn { background: #ffb020; }
-        .quota-fill.full { background: #d83c3e; }
-        .quota-val { width: 150px; text-align: right; flex-shrink: 0; opacity: .75; font-variant-numeric: tabular-nums; }
-        .quota-note { font-size: 12px; opacity: .55; margin-top: 8px; line-height: 1.4; }
-    </style>
-</head>
-
-<body>
-    <!-- Навигация -->
-    <nav class="nav">
-        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
-        <div class="nav-links">
-            <a href="/" class="nav-link active">🏠 Главная</a>
-            <a href="/faq" class="nav-link">📚 База знаний</a>
-            <a href="/tutors" class="nav-link">👨‍🏫 Администраторы</a>
-            <a href="/groups" class="nav-link">📌 Группы VK</a>
-            <a href="/users" class="nav-link">👥 Пользователи</a>
-            <a href="/broadcast" class="nav-link">📢 Рассылка</a>
-                    <a href="/feedback" class="nav-link<%= typeof currentRoute !== "undefined" && currentRoute === "/feedback" ? " active" : "" %>">⚠️ Жалобы</a>
-            <a href="/logs" class="nav-link<%= typeof currentRoute !== "undefined" && currentRoute === "/logs" ? " active" : "" %>">💻 Логи</a>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Обзор системы</h1>
+        <div class="page-sub">Состояние бота, ИИ-ассистента и резервных копий</div>
+    </div>
+    <div class="head-actions">
+        <button class="btn btn-ghost" id="aiSettingsBtn">⚙️ Настройки ИИ</button>
+    </div>
 </div>
-        <div class="nav-right">
-            <a href="/logout" class="nav-logout">🚪 Выход</a>
-        </div>
-    </nav>
 
-    <div class="container">
-        <h1 class="page-title">📊 Обзор системы</h1>
+<% if (typeof testCodeActive !== 'undefined' && testCodeActive) { %>
+    <div class="alert alert-warning">
+        <strong>⚠️ Активен тестовый код доступа ADMIN-MAIN</strong>
+        <p>
+            Пока этот код существует, роль администратора в боте может получить любой, кто его введёт —
+            код опубликован в исходниках проекта. Удалите его на странице
+            <a href="/tutors">Администраторы</a>, когда заведёте рабочие коды.
+        </p>
+    </div>
+<% } %>
 
-        <% if (typeof testCodeActive !== 'undefined' && testCodeActive) { %>
-            <div class="test-code-warning">
-                <strong>⚠️ Активен тестовый код доступа <code>ADMIN-MAIN</code></strong>
-                <p>
-                    Пока этот код существует, роль администратора в боте может получить любой,
-                    кто его введёт — код опубликован в исходниках проекта.
-                    Удалите его на странице <a href="/tutors">Администраторы</a>, когда заведёте рабочие коды.
-                </p>
-            </div>
-        <% } %>
+<div class="grid grid-kpi">
+    <div class="kpi">
+        <div class="kpi-label">📨 Обращений студентов</div>
+        <div class="kpi-value"><%= count %></div>
+        <div class="kpi-note">Всего за всё время</div>
+    </div>
 
-        <!-- Статистика -->
-        <div class="stats-grid">
-            <div class="stat-card">
-                <h3>Обращений (Тикетов)</h3>
-                <div class="stat-number">
-                    <%= count %>
-                </div>
-            </div>
-            <div class="stat-card">
-                <h3>Активных ботов</h3>
-                <div class="stat-number <%= botsCount > 0 ? 'success' : 'danger' %>">
-                    <%= botsCount %>
-                </div>
-            </div>
+    <div class="kpi">
+        <div class="kpi-label">🤖 Ботов запущено</div>
+        <div class="kpi-value <%= botsCount > 0 ? 'ok' : 'bad' %>"><%= botsCount %></div>
+        <div class="kpi-note"><%= botsCount > 0 ? 'Сообщества отвечают' : 'Ни одно сообщество не подключено' %></div>
+    </div>
 
-            <!-- Резервная копия базы: делает контейнер backup раз в сутки -->
-            <div class="stat-card">
-                <h3>💾 Резервная копия</h3>
-                <% var b = typeof backup !== 'undefined' ? backup : null; %>
-                <% if (!b) { %>
-                    <div class="backup-state danger">не настроена</div>
-                    <div class="ai-card-hint">Копии базы не делаются</div>
+    <div class="kpi">
+        <div class="kpi-label">💾 Резервная копия</div>
+        <% var b = typeof backup !== 'undefined' ? backup : null; %>
+        <% if (!b) { %>
+            <div class="kpi-value small bad">не настроена</div>
+            <div class="kpi-note">Копии базы не делаются</div>
+        <% } else { %>
+            <div class="kpi-value small <%= b.ok && !b.stale ? 'ok' : 'bad' %>"><%= b.time %></div>
+            <div class="kpi-note">
+                <% if (!b.ok) { %>
+                    Последняя попытка не удалась — смотрите журнал контейнера backup
                 <% } else { %>
-                    <div class="backup-state <%= b.ok && !b.stale ? 'success' : 'danger' %>">
-                        <%= b.time %>
-                    </div>
-                    <div class="ai-card-hint">
-                        <% if (!b.ok) { %>
-                            Последняя попытка не удалась — смотрите журнал контейнера backup
-                        <% } else { %>
-                            <%= b.size %><% if (b.sent === 'yes') { %>, копия на сервере<% } else if (b.sent === 'no') { %>, на сервер не ушла<% } else { %>, только на этом компьютере<% } %>
-                            <% if (b.stale) { %><br>Копия старше двух суток<% } %>
-                        <% } %>
-                    </div>
+                    <%= b.size %><% if (b.sent === 'yes') { %>, копия на сервере<% } else if (b.sent === 'no') { %>, на сервер не ушла<% } else { %>, только на этом компьютере<% } %>
+                    <% if (b.stale) { %><br>Копия старше двух суток<% } %>
                 <% } %>
             </div>
-
-            <!-- Карточка ИИ-ассистента (кликабельная) -->
-            <div class="stat-card ai-card" id="aiCard">
-                <h3>🤖 ИИ-ассистент</h3>
-                <div class="ai-status-list">
-                    <div class="ai-status-row">
-                        <span class="ai-dot <%= ollamaStatus === 'online' ? 'dot-online' : 'dot-offline' %>"></span>
-                        <span class="ai-label">Ollama</span>
-                        <span class="ai-model">
-                            <%= ollamaModel %>
-                        </span>
-                    </div>
-                    <div class="ai-status-row">
-                        <span class="ai-dot <%= gigachatStatus === 'online' ? 'dot-online' : 'dot-offline' %>"></span>
-                        <span class="ai-label">GigaChat</span>
-                        <span class="ai-model">
-                            <%= gigachatModel %>
-                        </span>
-                    </div>
-                </div>
-                <div class="ai-card-hint">Нажмите для настройки ⚙️</div>
-            </div>
-        </div>
-
-        <!-- Меню быстрого доступа -->
-        <h2 style="color: var(--text-secondary); margin-bottom: 20px;">Быстрый доступ</h2>
-        <div class="menu-grid">
-            <a href="/faq" class="menu-item">
-                <span class="icon">📚</span>
-                <b>База Знаний</b>
-                <p>Добавить/Удалить вопросы</p>
-            </a>
-            <a href="/tutors" class="menu-item">
-                <span class="icon">👨‍🏫</span>
-                <b>Администраторы</b>
-                <p>Управление доступом</p>
-            </a>
-            <a href="/groups" class="menu-item">
-                <span class="icon">📌</span>
-                <b>Группы VK</b>
-                <p>Подключение сообществ</p>
-            </a>
-            <a href="/users" class="menu-item">
-                <span class="icon">👥</span>
-                <b>Пользователи</b>
-                <p>Управление студентами</p>
-            </a>
-            <a href="/broadcast" class="menu-item">
-                <span class="icon">📢</span>
-                <b>Рассылка</b>
-                <p>Написать всем</p>
-            </a>
-        </div>
+        <% } %>
     </div>
 
-    <!-- Модальное окно настроек ИИ -->
-    <div class="modal-overlay" id="aiModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2>⚙️ Настройки ИИ-ассистента</h2>
-                <button class="modal-close" id="aiModalClose">✕</button>
+    <div class="kpi">
+        <div class="kpi-label">🧠 ИИ-ассистент</div>
+        <div class="quota-row" style="margin-top: 10px;">
+            <span class="status-dot <%= gigachatStatus === 'online' ? 'on' : 'off' %>"></span>
+            <span style="flex:1">GigaChat</span>
+            <span class="card-note"><%= gigachatModel %></span>
+        </div>
+        <div class="quota-row" style="margin-bottom: 0;">
+            <span class="status-dot <%= ollamaStatus === 'online' ? 'on' : 'off' %>"></span>
+            <span style="flex:1">Ollama</span>
+            <span class="card-note"><%= ollamaModel %></span>
+        </div>
+    </div>
+</div>
+
+<h2 style="font-size:17px; margin: 26px 0 14px;">Быстрый доступ</h2>
+<div class="grid grid-tiles">
+    <a href="/faq" class="tile"><span class="ico">📚</span><b>База знаний</b><span>Вопросы и ответы бота</span></a>
+    <a href="/tutors" class="tile"><span class="ico">👨‍🏫</span><b>Администраторы</b><span>Коды доступа</span></a>
+    <a href="/groups" class="tile"><span class="ico">📌</span><b>Группы VK</b><span>Подключённые сообщества</span></a>
+    <a href="/users" class="tile"><span class="ico">👥</span><b>Пользователи</b><span>Студенты и курсы</span></a>
+    <a href="/broadcast" class="tile"><span class="ico">📢</span><b>Рассылка</b><span>Сообщение всем сразу</span></a>
+    <a href="/logs" class="tile"><span class="ico">💻</span><b>Логи</b><span>Что происходило у бота</span></a>
+</div>
+
+<!-- Настройки ИИ -->
+<div class="modal" id="aiModal">
+    <div class="modal-box">
+        <div class="modal-head">
+            <span>⚙️ Настройки ИИ-ассистента</span>
+            <button class="icon-btn" id="aiModalClose" aria-label="Закрыть">✕</button>
+        </div>
+
+        <div id="aiModalLoading" class="hint">Проверяем состояние моделей…</div>
+
+        <div id="aiModalBody" hidden>
+            <div class="card">
+                <div class="card-head">
+                    <span><span class="status-dot off" id="gigachatDot"></span> GigaChat (облако)</span>
+                </div>
+                <div class="form-group">
+                    <label>Authorization Key</label>
+                    <input type="password" id="gigachatKey" placeholder="Вставьте Authorization Key">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Scope</label>
+                        <select id="gigachatScope">
+                            <option value="GIGACHAT_API_PERS">GIGACHAT_API_PERS (физические лица)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Модель</label>
+                        <select id="gigachatModel">
+                            <option value="GigaChat-2">GigaChat-2 (быстрая)</option>
+                            <option value="GigaChat-2-Pro">GigaChat-2-Pro (продвинутая)</option>
+                            <option value="GigaChat-2-Max">GigaChat-2-Max (максимальная)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="gigachatQuota" hidden>
+                    <div class="card-head">
+                        <span class="card-note">Расход токенов по классам моделей</span>
+                        <button type="button" class="icon-btn" id="quotaRefreshBtn"
+                                title="Сверить с личным кабинетом Сбера">↻</button>
+                    </div>
+                    <div id="quotaRows"></div>
+                    <div class="card-note" id="quotaSync">Учёт бота. Нажмите ↻, чтобы сверить с личным кабинетом Сбера.</div>
+                    <div class="card-note" style="margin-top:6px">
+                        Во freemium-режиме квоты классов независимы: когда заканчивается один, бот сам переходит к следующему.
+                    </div>
+                </div>
+
+                <div id="gigachatKeyInfo" hidden style="margin-top:14px">
+                    <div class="quota-row">
+                        <span style="flex:1">Текущий ключ: <code class="mono" id="gigachatMaskedKey"></code></span>
+                        <button class="btn btn-danger btn-sm" id="deleteKeyBtn">Удалить ключ</button>
+                    </div>
+                    <div class="card-note">Оставьте поле пустым, чтобы сохранить текущий ключ.</div>
+                </div>
             </div>
 
-            <div id="aiModalLoading" class="modal-loading">
-                <div class="spinner"></div>
-                <p>Проверка статуса моделей...</p>
+            <div class="card" style="margin-bottom:0">
+                <div class="card-head">
+                    <span><span class="status-dot off" id="ollamaDot"></span> Ollama (локальная модель)</span>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Адрес сервера</label>
+                        <input type="text" id="ollamaUrl" placeholder="http://127.0.0.1:11434">
+                    </div>
+                    <div class="form-group">
+                        <label>Модель</label>
+                        <select id="ollamaModel">
+                            <option value="">Загрузка…</option>
+                        </select>
+                    </div>
+                </div>
             </div>
 
-            <div id="aiModalBody" style="display: none;">
-                <!-- Секция Ollama -->
-                <div class="ai-section">
-                    <div class="ai-section-header">
-                        <span class="ai-dot" id="ollamaDot"></span>
-                        <h3>Ollama (Локальная модель)</h3>
-                    </div>
+            <div class="alert" id="aiSaveResult" hidden></div>
 
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>URL сервера</label>
-                            <input type="text" id="ollamaUrl" placeholder="http://127.0.0.1:11434">
-                        </div>
-                    </div>
-
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Модель</label>
-                            <select id="ollamaModel">
-                                <option value="">Загрузка...</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Секция GigaChat -->
-                <div class="ai-section">
-                    <div class="ai-section-header">
-                        <span class="ai-dot" id="gigachatDot"></span>
-                        <h3>GigaChat (Облачная модель)</h3>
-                    </div>
-
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Authorization Key</label>
-                            <input type="password" id="gigachatKey" placeholder="Текущий: не задан">
-                        </div>
-                    </div>
-
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Scope</label>
-                            <select id="gigachatScope">
-                                <option value="GIGACHAT_API_PERS">GIGACHAT_API_PERS (Физ. лица)</option>
-                                <!--<option value="GIGACHAT_API_B2B">GIGACHAT_API_B2B (ИП/Юр. лица)</option>-->
-                                <!--<option value="GIGACHAT_API_CORP">GIGACHAT_API_CORP (Pay-as-you-go)</option>-->
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Модель</label>
-                            <select id="gigachatModel">
-                                <option value="GigaChat-2">GigaChat-2 (Быстрая)</option>
-                                <option value="GigaChat-2-Pro">GigaChat-2-Pro (Продвинутая)</option>
-                                <option value="GigaChat-2-Max">GigaChat-2-Max (Максимальная)</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div class="quota-box" id="gigachatQuota" style="display: none;">
-                        <div class="quota-head">
-                            <div class="quota-title">Расход токенов по классам моделей</div>
-                            <button type="button" class="quota-refresh" id="quotaRefreshBtn"
-                                    title="Сверить с личным кабинетом Сбера" aria-label="Обновить данные о лимитах">↻</button>
-                        </div>
-                        <div id="quotaRows"></div>
-                        <div class="quota-sync" id="quotaSync">Учёт бота. Нажмите ↻, чтобы сверить с личным кабинетом Сбера.</div>
-                        <div class="quota-note">Во freemium-режиме квоты классов независимы: когда заканчивается один, бот сам переходит к следующему.</div>
-                    </div>
-
-                    <div class="info-box" id="gigachatKeyInfo" style="display: none;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                Текущий ключ: <code id="gigachatMaskedKey"></code>
-                                <br><small>Оставьте поле пустым, чтобы сохранить текущий</small>
-                            </div>
-                            <button class="btn btn-danger btn-sm" id="deleteKeyBtn">Удалить ключ</button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Кнопки -->
-                <div class="modal-actions">
-                    <button class="btn btn-primary" id="saveAiBtn">
-                        💾 Сохранить
-                    </button>
-                    <button class="btn btn-danger" id="aiModalCancel" style="margin-left: 10px;">
-                        Отмена
-                    </button>
-                </div>
-
-                <div id="aiSaveResult" class="ai-save-result" style="display: none;"></div>
+            <div class="modal-foot">
+                <button class="btn btn-ghost" id="aiModalCancel">Отмена</button>
+                <button class="btn btn-primary" id="saveAiBtn">💾 Сохранить</button>
             </div>
         </div>
     </div>
+</div>
 
-    <script>
-        // Токен для изменяющих AJAX-запросов (см. CSRF-middleware в index.js)
-        const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
-        function openAiModal() {
-            document.getElementById('aiModal').classList.add('active');
-            document.getElementById('aiModalLoading').style.display = 'flex';
-            document.getElementById('aiModalBody').style.display = 'none';
-            loadAiStatus();
-        }
+<script>
+    // Токен для изменяющих AJAX-запросов (см. CSRF-middleware в index.js)
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').content;
+    const $ = (id) => document.getElementById(id);
 
-        function closeAiModal() {
-            document.getElementById('aiModal').classList.remove('active');
-        }
+    function openAiModal() {
+        $('aiModal').classList.add('open');
+        $('aiModalLoading').hidden = false;
+        $('aiModalBody').hidden = true;
+        loadAiStatus();
+    }
 
-        // Закрытие по клику на overlay
-        document.getElementById('aiModal').addEventListener('click', function (e) {
-            if (e.target === this) closeAiModal();
-        });
+    function closeAiModal() {
+        $('aiModal').classList.remove('open');
+    }
 
-        async function loadAiStatus() {
-            try {
-                const res = await fetch('/api/ai-status');
-                const data = await res.json();
+    async function loadAiStatus() {
+        try {
+            const res = await fetch('/api/ai-status');
+            const data = await res.json();
 
-                // Ollama
-                const ollamaDot = document.getElementById('ollamaDot');
-                ollamaDot.className = 'ai-dot ' + (data.ollama.status === 'online' ? 'dot-online' : 'dot-offline');
-                document.getElementById('ollamaUrl').value = data.ollama.url;
+            $('ollamaDot').className = 'status-dot ' + (data.ollama.status === 'online' ? 'on' : 'off');
+            $('ollamaUrl').value = data.ollama.url;
 
-                // Заполняем select моделей Ollama
-                const modelSelect = document.getElementById('ollamaModel');
-                modelSelect.innerHTML = '';
+            const modelSelect = $('ollamaModel');
+            modelSelect.replaceChildren();
+            const models = data.ollama.models.length ? data.ollama.models : [data.ollama.model];
+            models.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m;
+                opt.textContent = data.ollama.models.length ? m : m + ' (сервер не отвечает)';
+                if (m === data.ollama.model) opt.selected = true;
+                modelSelect.appendChild(opt);
+            });
 
-                if (data.ollama.models.length > 0) {
-                    data.ollama.models.forEach(m => {
-                        const opt = document.createElement('option');
-                        opt.value = m;
-                        opt.textContent = m;
-                        if (m === data.ollama.model) opt.selected = true;
-                        modelSelect.appendChild(opt);
-                    });
-                } else {
-                    // Если Ollama недоступна — показать текущую модель из БД
-                    const opt = document.createElement('option');
-                    opt.value = data.ollama.model;
-                    opt.textContent = data.ollama.model + ' (сервер не отвечает)';
-                    modelSelect.appendChild(opt);
-                }
+            $('gigachatDot').className = 'status-dot ' + (data.gigachat.status === 'configured' ? 'on' : 'off');
+            $('gigachatScope').value = data.gigachat.scope;
+            $('gigachatModel').value = data.gigachat.model;
+            renderQuota(data.gigachat.usage || []);
 
-                // GigaChat
-                const gigaDot = document.getElementById('gigachatDot');
-                gigaDot.className = 'ai-dot ' + (data.gigachat.status === 'configured' ? 'dot-configured' : 'dot-offline');
-
-                document.getElementById('gigachatScope').value = data.gigachat.scope;
-                document.getElementById('gigachatModel').value = data.gigachat.model;
-
-                renderQuota(data.gigachat.usage || []);
-
-                if (data.gigachat.maskedKey) {
-                    document.getElementById('gigachatKeyInfo').style.display = 'block';
-                    document.getElementById('gigachatMaskedKey').textContent = data.gigachat.maskedKey;
-                    document.getElementById('gigachatKey').placeholder = 'Оставьте пустым для сохранения текущего';
-                } else {
-                    document.getElementById('gigachatKeyInfo').style.display = 'none';
-                    document.getElementById('gigachatKey').placeholder = 'Вставьте Authorization Key';
-                }
-
-                document.getElementById('aiModalLoading').style.display = 'none';
-                document.getElementById('aiModalBody').style.display = 'block';
-
-            } catch (e) {
-                const errEl = document.getElementById('aiModalLoading');
-                errEl.innerHTML = '<p style="color: var(--danger);"></p>';
-                errEl.querySelector('p').textContent = 'Ошибка загрузки: ' + e.message;
+            if (data.gigachat.maskedKey) {
+                $('gigachatKeyInfo').hidden = false;
+                $('gigachatMaskedKey').textContent = data.gigachat.maskedKey;
+                $('gigachatKey').placeholder = 'Оставьте пустым, чтобы сохранить текущий';
+            } else {
+                $('gigachatKeyInfo').hidden = true;
+                $('gigachatKey').placeholder = 'Вставьте Authorization Key';
             }
+
+            $('aiModalLoading').hidden = true;
+            $('aiModalBody').hidden = false;
+        } catch (e) {
+            $('aiModalLoading').textContent = 'Не удалось загрузить состояние: ' + e.message;
         }
+    }
 
-        async function saveAiSettings() {
-            const btn = document.getElementById('saveAiBtn');
-            const result = document.getElementById('aiSaveResult');
-            btn.disabled = true;
-            btn.textContent = '⏳ Сохранение...';
+    // Отрисовка расхода квот. Значения приходят из базы, но собираем DOM
+    // без innerHTML — единый подход после истории с XSS в логах.
+    function renderQuota(usage) {
+        const box = $('gigachatQuota');
+        const rows = $('quotaRows');
+        rows.replaceChildren();
+        if (!usage.length) { box.hidden = true; return; }
+        box.hidden = false;
 
-            try {
-                const body = {
-                    ollama_url: document.getElementById('ollamaUrl').value,
-                    ollama_model: document.getElementById('ollamaModel').value,
-                    gigachat_key: document.getElementById('gigachatKey').value,
-                    gigachat_scope: document.getElementById('gigachatScope').value,
-                    gigachat_model: document.getElementById('gigachatModel').value
-                };
+        // Израсходовано — до тысячных миллиона (шаг 1000 токенов), квота — целыми
+        const usedMln = n => (n / 1000000).toLocaleString('ru-RU', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' млн';
+        const quotaMln = n => (n / 1000000).toLocaleString('ru-RU', { maximumFractionDigits: 3 }) + ' млн';
 
-                const res = await fetch('/ai-settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
-                    body: JSON.stringify(body)
-                });
+        for (const u of usage) {
+            const row = document.createElement('div');
+            row.className = 'quota-row';
 
-                const data = await res.json();
+            const name = document.createElement('span');
+            name.className = 'name';
+            name.textContent = u.modelId + (u.exhausted ? ' (исчерпан)' : '');
 
-                if (data.success) {
-                    result.className = 'ai-save-result success';
-                    result.textContent = '✅ ' + data.message;
-                    result.style.display = 'block';
+            const bar = document.createElement('div');
+            bar.className = 'quota-bar';
+            const fill = document.createElement('div');
+            fill.className = 'quota-fill' + (u.percent >= 100 ? ' full' : (u.percent >= 80 ? ' warn' : ''));
+            fill.style.width = Math.min(100, u.percent) + '%';
+            bar.appendChild(fill);
 
-                    // Обновляем индикаторы на дашборде через 1.5 сек
-                    setTimeout(() => location.reload(), 1500);
-                } else {
-                    throw new Error(data.error || 'Неизвестная ошибка');
-                }
-            } catch (e) {
-                result.className = 'ai-save-result error';
-                result.textContent = '❌ ' + e.message;
-                result.style.display = 'block';
-            } finally {
-                btn.disabled = false;
-                btn.textContent = '💾 Сохранить';
-            }
+            const val = document.createElement('span');
+            val.className = 'quota-val';
+            val.textContent = `${usedMln(u.used)} / ${quotaMln(u.quota)}`;
+            val.title = `${u.used.toLocaleString('ru-RU')} из ${u.quota.toLocaleString('ru-RU')} токенов`;
+
+            row.append(name, bar, val);
+            rows.appendChild(row);
         }
+    }
 
-        // Отрисовка расхода квот. Значения приходят из БД, но принципиально
-        // собираем DOM без innerHTML — единый подход после истории с XSS в логах.
-        function renderQuota(usage) {
-            const box = document.getElementById('gigachatQuota');
-            const rows = document.getElementById('quotaRows');
-            rows.replaceChildren();
-
-            if (!usage.length) {
-                box.style.display = 'none';
-                return;
-            }
-            box.style.display = 'block';
-
-            // Израсходовано — до тысячных миллиона (шаг 1000 токенов), квота — целыми миллионами
-            const usedMln = n => (n / 1000000).toLocaleString('ru-RU', { minimumFractionDigits: 3, maximumFractionDigits: 3 }) + ' млн';
-            const quotaMln = n => (n / 1000000).toLocaleString('ru-RU', { maximumFractionDigits: 3 }) + ' млн';
-
-            for (const u of usage) {
-                const row = document.createElement('div');
-                row.className = 'quota-row';
-
-                const name = document.createElement('span');
-                name.className = 'name';
-                name.textContent = u.modelId + (u.exhausted ? ' (исчерпан)' : '');
-
-                const bar = document.createElement('div');
-                bar.className = 'quota-bar';
-                const fill = document.createElement('div');
-                fill.className = 'quota-fill' + (u.percent >= 100 ? ' full' : (u.percent >= 80 ? ' warn' : ''));
-                fill.style.width = Math.min(100, u.percent) + '%';
-                bar.appendChild(fill);
-
-                const val = document.createElement('span');
-                val.className = 'quota-val';
-                val.textContent = `${usedMln(u.used)} / ${quotaMln(u.quota)}`;
-                val.title = `${u.used.toLocaleString('ru-RU')} из ${u.quota.toLocaleString('ru-RU')} токенов`;
-
-                row.append(name, bar, val);
-                rows.appendChild(row);
-            }
+    // Сверка лимитов с личным кабинетом Сбера — только по нажатию, без опроса по таймеру
+    async function refreshQuota() {
+        const btn = $('quotaRefreshBtn');
+        const status = $('quotaSync');
+        btn.disabled = true;
+        status.textContent = 'Запрашиваем баланс у Сбера…';
+        try {
+            const res = await fetch('/api/ai-balance/refresh', { method: 'POST', headers: { 'X-CSRF-Token': csrfToken } });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            renderQuota(data.usage || []);
+            status.textContent = '✓ Сверено с личным кабинетом Сбера в ' + new Date(data.syncedAt).toLocaleTimeString('ru-RU');
+        } catch (e) {
+            status.textContent = 'Не удалось получить баланс: ' + e.message;
+        } finally {
+            btn.disabled = false;
         }
+    }
 
-        // Сверка лимитов с личным кабинетом Сбера — только по нажатию,
-        // без опроса по таймеру
-        async function refreshQuota() {
-            const btn = document.getElementById('quotaRefreshBtn');
-            const status = document.getElementById('quotaSync');
-            btn.disabled = true;
-            btn.classList.add('spinning');
-            status.className = 'quota-sync';
-            status.textContent = 'Запрашиваем баланс у Сбера…';
+    function showResult(ok, text) {
+        const box = $('aiSaveResult');
+        box.className = 'alert ' + (ok ? 'alert-success' : 'alert-error');
+        box.textContent = (ok ? '✅ ' : '❌ ') + text;
+        box.hidden = false;
+    }
 
-            try {
-                const res = await fetch('/api/ai-balance/refresh', {
-                    method: 'POST',
-                    headers: { 'X-CSRF-Token': csrfToken }
-                });
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-
-                renderQuota(data.usage || []);
-                const time = new Date(data.syncedAt).toLocaleTimeString('ru-RU');
-                status.className = 'quota-sync ok';
-                status.textContent = `✓ Сверено с личным кабинетом Сбера в ${time}`;
-            } catch (e) {
-                status.className = 'quota-sync fail';
-                status.textContent = 'Не удалось получить баланс: ' + e.message;
-            } finally {
-                btn.disabled = false;
-                btn.classList.remove('spinning');
-            }
+    async function saveAiSettings() {
+        const btn = $('saveAiBtn');
+        btn.disabled = true;
+        btn.textContent = '⏳ Сохранение…';
+        try {
+            const res = await fetch('/ai-settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+                body: JSON.stringify({
+                    ollama_url: $('ollamaUrl').value,
+                    ollama_model: $('ollamaModel').value,
+                    gigachat_key: $('gigachatKey').value,
+                    gigachat_scope: $('gigachatScope').value,
+                    gigachat_model: $('gigachatModel').value
+                })
+            });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.error || 'Неизвестная ошибка');
+            showResult(true, data.message);
+            setTimeout(() => location.reload(), 1500);
+        } catch (e) {
+            showResult(false, e.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '💾 Сохранить';
         }
+    }
 
-        async function deleteGigaChatKey() {
-            if (!confirm('Вы уверены, что хотите удалить ключ GigaChat? ИИ-ответы через Сбербанк перестанут работать.')) return;
-
-            const result = document.getElementById('aiSaveResult');
-            try {
-                const res = await fetch('/ai-settings/gigachat-key', { method: 'DELETE', headers: { 'X-CSRF-Token': csrfToken } });
-                const data = await res.json();
-
-                if (data.success) {
-                    result.className = 'ai-save-result success';
-                    result.textContent = '✅ ' + data.message;
-                    result.style.display = 'block';
-                    setTimeout(() => location.reload(), 1500);
-                } else {
-                    throw new Error(data.error || 'Неизвестная ошибка');
-                }
-            } catch (e) {
-                result.className = 'ai-save-result error';
-                result.textContent = '❌ ' + e.message;
-                result.style.display = 'block';
-            }
+    async function deleteGigaChatKey() {
+        if (!confirm('Удалить ключ GigaChat? Ответы через Сбер перестанут работать.')) return;
+        try {
+            const res = await fetch('/ai-settings/gigachat-key', { method: 'DELETE', headers: { 'X-CSRF-Token': csrfToken } });
+            const data = await res.json();
+            if (!data.success) throw new Error(data.error || 'Неизвестная ошибка');
+            showResult(true, data.message);
+            setTimeout(() => location.reload(), 1500);
+        } catch (e) {
+            showResult(false, e.message);
         }
-    </script>
-    <script>
-        // Обработчики модалки ИИ — вынесены из onclick (CSP: script-src-attr 'none')
-        document.addEventListener('DOMContentLoaded', () => {
-            document.getElementById('aiCard').addEventListener('click', openAiModal);
-            document.getElementById('aiModalClose').addEventListener('click', closeAiModal);
-            document.getElementById('aiModalCancel').addEventListener('click', closeAiModal);
-            document.getElementById('saveAiBtn').addEventListener('click', saveAiSettings);
-            document.getElementById('deleteKeyBtn').addEventListener('click', deleteGigaChatKey);
-            document.getElementById('quotaRefreshBtn').addEventListener('click', refreshQuota);
-        });
-    </script>
-</body>
+    }
 
-</html>
+    // Обработчики вынесены из атрибутов (CSP: script-src-attr 'none')
+    document.addEventListener('DOMContentLoaded', () => {
+        $('aiSettingsBtn').addEventListener('click', openAiModal);
+        $('aiModalClose').addEventListener('click', closeAiModal);
+        $('aiModalCancel').addEventListener('click', closeAiModal);
+        $('saveAiBtn').addEventListener('click', saveAiSettings);
+        $('deleteKeyBtn').addEventListener('click', deleteGigaChatKey);
+        $('quotaRefreshBtn').addEventListener('click', refreshQuota);
+        $('aiModal').addEventListener('click', e => { if (e.target === $('aiModal')) closeAiModal(); });
+    });
+</script>
+
+<%- include('partials/layout_end') %>

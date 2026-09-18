@@ -9,6 +9,28 @@ const { parseCommunityName, describeCommunity } = require('../courses');
 const fs = require('fs');
 const path = require('path');
 
+// Сколько строк показываем на одной странице списка. Без этого страницы
+// «Пользователи» и «База знаний» пытались отрисовать всю таблицу целиком:
+// на реальной базе это тысячи строк и секунды ожидания.
+const PAGE_SIZE = 25;
+
+/** Номер страницы, смещение и общее число страниц для списка */
+function paging(req, total, size = PAGE_SIZE) {
+    const pages = Math.max(1, Math.ceil(total / size));
+    const page = Math.min(Math.max(parseInt(req.query.page, 10) || 1, 1), pages);
+    return { page, pages, total, size, offset: (page - 1) * size };
+}
+
+/** Текущие параметры запроса без page — ссылки постраничного вывода сохраняют фильтры */
+function queryWithoutPage(req) {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(req.query)) {
+        if (key !== 'page' && value) params.append(key, String(value));
+    }
+    const str = params.toString();
+    return str ? str + '&' : '';
+}
+
 // Состояние резервных копий для главной страницы. Файл пишет контейнер backup
 // после каждой копии (см. backup/backup.sh). Копии старше двух суток
 // подсвечиваются красным: иначе о том, что они перестали делаться, никто не узнает.
@@ -324,11 +346,38 @@ router.delete('/ai-settings/gigachat-key', requireAuth, async (req, res) => {
 // 1. Просмотр списка
 router.get('/faq', requireAuth, noCache, async (req, res) => {
     try {
-        const result = await db.query('SELECT * FROM faq ORDER BY category ASC, id DESC');
+        const search = (req.query.q || '').trim();
+        const category = (req.query.category || '').trim();
+
+        // Условия поиска собираем списком: так же, как на странице пользователей
+        const where = [];
+        const params = [];
+        if (category) {
+            params.push(category);
+            where.push(`category = $${params.length}`);
+        }
+        if (search) {
+            params.push(`%${search}%`);
+            where.push(`(question ILIKE $${params.length} OR answer ILIKE $${params.length} OR COALESCE(keywords, '') ILIKE $${params.length})`);
+        }
+        const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+        const totalRes = await db.query(`SELECT count(*) FROM faq ${whereSql}`, params);
+        const page = paging(req, Number(totalRes.rows[0].count));
+
+        const result = await db.query(
+            `SELECT * FROM faq ${whereSql} ORDER BY category ASC, id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+            [...params, page.size, page.offset]
+        );
         const cats = await db.query("SELECT DISTINCT category FROM faq WHERE category IS NOT NULL AND category <> '' ORDER BY category");
+
         res.render('faq', {
             faq: result.rows,
             categories: cats.rows.map(r => r.category),
+            search,
+            category,
+            page,
+            queryString: queryWithoutPage(req),
             error: req.query.error || null,
             success: req.query.success || null
         });
@@ -847,6 +896,7 @@ function promoteCourse(groupNumber) {
 router.get('/users', requireAuth, noCache, async (req, res) => {
     try {
         const { course, group, role, graduated } = req.query;
+        const search = (req.query.q || '').trim();
 
         let query = 'SELECT * FROM users WHERE 1=1';
         const params = [];
@@ -882,9 +932,18 @@ router.get('/users', requireAuth, noCache, async (req, res) => {
             query += ' AND (is_graduated = FALSE OR is_graduated IS NULL)';
         }
 
-        query += ' ORDER BY created_at DESC';
+        // Поиск по имени и номеру VK: с тысячами студентов листать бесполезно
+        if (search) {
+            query += ` AND (full_name ILIKE $${paramIndex} OR CAST(vk_id AS TEXT) LIKE $${paramIndex})`;
+            params.push(`%${search}%`);
+            paramIndex++;
+        }
 
-        const result = await db.query(query, params);
+        const totalRes = await db.query(query.replace('SELECT *', 'SELECT count(*)'), params);
+        const page = paging(req, Number(totalRes.rows[0].count));
+
+        query += ` ORDER BY created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+        const result = await db.query(query, [...params, page.size, page.offset]);
 
         res.render('users', {
             users: result.rows,
@@ -892,6 +951,9 @@ router.get('/users', requireAuth, noCache, async (req, res) => {
             filter_group: group || '',
             filter_role: role || '',
             filter_graduated: graduated || '',
+            search,
+            page,
+            queryString: queryWithoutPage(req),
             success: req.query.success,
             error: req.query.error
         });
@@ -1013,13 +1075,22 @@ router.post('/users/promote-all', requireAuth, noCache, async (req, res) => {
 // 1. Страница списка отзывов
 router.get('/feedback', requireAuth, noCache, async (req, res) => {
     try {
+        const totalRes = await db.query('SELECT count(*) FROM feedback f JOIN users u ON f.vk_id = u.vk_id');
+        const page = paging(req, Number(totalRes.rows[0].count));
+
         const result = await db.query(`
             SELECT f.id, f.vk_id, f.text, f.status, f.created_at, u.full_name, u.role
             FROM feedback f
             JOIN users u ON f.vk_id = u.vk_id
             ORDER BY f.created_at DESC
-        `);
-        res.render('feedback', { feedbackList: result.rows, currentRoute: '/feedback' });
+            LIMIT $1 OFFSET $2
+        `, [page.size, page.offset]);
+        res.render('feedback', {
+            feedbackList: result.rows,
+            page,
+            queryString: queryWithoutPage(req),
+            currentRoute: '/feedback'
+        });
     } catch (err) {
         console.error('[ADMIN] Ошибка в разделе отзывов:', err);
         res.status(500).send('Ошибка при загрузке отзывов.');

@@ -1,0 +1,51 @@
+<%#
+    Начало страницы админки: шапка документа, боковое меню, шапка для телефона.
+    Ожидает переменные:
+      title  — заголовок вкладки браузера
+      active — путь текущего раздела, например '/faq'
+    Закрывается через partials/layout_end.
+%>
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= title %> — Админ-панель</title>
+    <meta name="csrf-token" content="<%= typeof csrfToken !== 'undefined' ? csrfToken : '' %>">
+    <link rel="stylesheet" href="/css/admin.css">
+</head>
+
+<body>
+    <div class="layout">
+        <%
+            const menu = [
+                { href: '/', icon: '📊', label: 'Обзор' },
+                { href: '/faq', icon: '📚', label: 'База знаний' },
+                { href: '/tutors', icon: '👨‍🏫', label: 'Администраторы' },
+                { href: '/groups', icon: '📌', label: 'Группы VK' },
+                { href: '/users', icon: '👥', label: 'Пользователи' },
+                { href: '/broadcast', icon: '📢', label: 'Рассылка' },
+                { href: '/feedback', icon: '⚠️', label: 'Жалобы' },
+                { href: '/logs', icon: '💻', label: 'Логи' }
+            ];
+        %>
+        <aside class="sidebar" id="sidebar">
+            <a href="/" class="brand"><span class="brand-dot">🤖</span> IOT Bot</a>
+            <% menu.forEach(function (m) { %>
+                <a href="<%= m.href %>" class="nav-link<%= active === m.href ? ' active' : '' %>">
+                    <span class="ico"><%= m.icon %></span><%= m.label %>
+                </a>
+            <% }); %>
+            <div class="sidebar-foot">
+                <a href="/logout" class="nav-link logout"><span class="ico">🚪</span> Выход</a>
+            </div>
+        </aside>
+        <div class="scrim" id="scrim"></div>
+
+        <header class="topbar">
+            <button class="burger" id="burger" type="button" aria-label="Меню">☰</button>
+            <strong><%= title %></strong>
+        </header>
+
+        <main class="main">

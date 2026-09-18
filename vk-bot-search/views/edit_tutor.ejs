@@ -1,56 +1,25 @@
-<!DOCTYPE html>
-<html lang="ru">
+<%- include('partials/layout_start', { title: 'Изменение доступа', active: '/tutors' }) %>
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Редактирование Администратора — Админ-панель</title>
-    <link rel="stylesheet" href="/css/admin.css">
-</head>
-
-<body>
-    <!-- Навигация -->
-    <nav class="nav">
-        <a href="/" class="nav-brand">🤖 IOT Bot Admin</a>
-        <div class="nav-links">
-            <a href="/" class="nav-link">🏠 Главная</a>
-            <a href="/faq" class="nav-link">📚 База знаний</a>
-            <a href="/tutors" class="nav-link active">👨‍💼 Администраторы</a>
-            <a href="/groups" class="nav-link">📌 Группы VK</a>
-            <a href="/users" class="nav-link">👥 Пользователи</a>
-            <a href="/broadcast" class="nav-link">📢 Рассылка</a>
-                    <a href="/feedback" class="nav-link<%= typeof currentRoute !== "undefined" && currentRoute === "/feedback" ? " active" : "" %>">⚠️ Жалобы</a>
-            <a href="/logs" class="nav-link<%= typeof currentRoute !== "undefined" && currentRoute === "/logs" ? " active" : "" %>">💻 Логи</a>
+<div class="page-head">
+    <h1 class="page-title">Изменение доступа</h1>
 </div>
-        <div class="nav-right">
-            <a href="/logout" class="nav-logout">🚪 Выход</a>
+
+<div class="card" style="max-width:620px">
+    <form action="/tutors/edit/<%= tutor.code %>" method="POST">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>">
+        <div class="form-group">
+            <label>Код доступа (изменить нельзя)</label>
+            <input type="text" value="<%= tutor.code %>" disabled>
         </div>
-    </nav>
-
-    <div class="container" style="max-width: 600px;">
-        <h1 class="page-title">✏️ Редактирование доступа</h1>
-
-        <div class="card">
-            <form action="/tutors/edit/<%= tutor.code %>" method="POST">
-                <input type="hidden" name="_csrf" value="<%= csrfToken %>">
-                <div class="form-group">
-                    <label>Код доступа (Нельзя изменить)</label>
-                    <input type="text" value="<%= tutor.code %>" disabled style="opacity: 0.6; cursor: not-allowed;">
-                </div>
-
-                <div class="form-group">
-                    <label>ФИО Администратора</label>
-                    <input type="text" name="name" value="<%= tutor.admin_name %>" required>
-                </div>
-
-                <div style="display: flex; gap: 15px; margin-top: 20px;">
-                    <button type="submit" class="btn btn-primary" style="background: var(--purple);">💾
-                        Сохранить</button>
-                    <a href="/tutors" class="btn btn-danger" style="text-decoration: none;">Отмена</a>
-                </div>
-            </form>
+        <div class="form-group">
+            <label>Имя администратора</label>
+            <input type="text" name="name" value="<%= tutor.admin_name %>" required autofocus>
         </div>
-    </div>
-</body>
+        <div class="head-actions" style="margin-top:6px">
+            <button type="submit" class="btn btn-primary">💾 Сохранить</button>
+            <a href="/tutors" class="btn btn-ghost">Отмена</a>
+        </div>
+    </form>
+</div>
 
-</html>
+<%- include('partials/layout_end') %>
