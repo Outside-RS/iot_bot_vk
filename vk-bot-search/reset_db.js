@@ -167,6 +167,8 @@ async function runMigration() {
                 question TEXT NOT NULL,
                 answer TEXT NOT NULL,
                 keywords TEXT,
+                -- когда вопрос завели: по ней сортируется список в админке
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 
                 -- ИНДЕКС: Ищем ТОЛЬКО в вопросе + ключевых словах (ответ исключен)
                 -- COALESCE нужен, чтобы если keywords пустые, поиск не ломался

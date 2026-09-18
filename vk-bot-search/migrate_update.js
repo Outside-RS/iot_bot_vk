@@ -41,6 +41,14 @@ const c = new Client({
     // Перевод курса ищет студентов по сообществу
     await c.query('CREATE INDEX IF NOT EXISTS idx_users_vk_group ON users(vk_group_id)');
 
+    // ── База знаний ────────────────────────────────────────────
+    // Дата добавления вопроса — по ней сортируется список в админке.
+    // Значение по умолчанию ставим ОТДЕЛЬНОЙ командой: иначе у всех
+    // существующих вопросов оказалась бы одна и та же дата — момент миграции.
+    // У старых записей останется пусто, и в списке они будут в конце.
+    await c.query('ALTER TABLE faq ADD COLUMN IF NOT EXISTS created_at TIMESTAMP');
+    await c.query('ALTER TABLE faq ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP');
+
     // ── Учёт токенов GigaChat ──────────────────────────────────
     // Во freemium-режиме квоты у классов моделей независимые — считаем по каждому.
     await c.query(`

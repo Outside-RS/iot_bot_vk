@@ -21,6 +21,26 @@ function paging(req, total, size = PAGE_SIZE) {
     return { page, pages, total, size, offset: (page - 1) * size };
 }
 
+// Поля, по которым разрешено сортировать базу знаний. Список закрытый:
+// имя колонки уходит прямо в SQL, подставлять туда что угодно нельзя.
+const FAQ_SORTS = {
+    id: 'id',
+    category: 'category',
+    created_at: 'created_at'
+};
+
+/** Порядок сортировки списка вопросов: поле, направление и кусок SQL */
+function faqOrder(req) {
+    const sort = FAQ_SORTS[req.query.sort] ? req.query.sort : 'category';
+    const direction = req.query.dir === 'asc' ? 'asc' : (req.query.dir === 'desc' ? 'desc' : (sort === 'category' ? 'asc' : 'desc'));
+    const dir = direction.toUpperCase();
+    // Пустые даты у старых записей отправляем в конец при любом направлении
+    const sql = sort === 'category'
+        ? `category ${dir}, id DESC`
+        : (sort === 'created_at' ? `created_at ${dir} NULLS LAST, id ${dir}` : `id ${dir}`);
+    return { sort, direction, sql };
+}
+
 /** Текущие параметры запроса без page — ссылки постраничного вывода сохраняют фильтры */
 function queryWithoutPage(req) {
     const params = new URLSearchParams();
@@ -364,9 +384,10 @@ router.get('/faq', requireAuth, noCache, async (req, res) => {
 
         const totalRes = await db.query(`SELECT count(*) FROM faq ${whereSql}`, params);
         const page = paging(req, Number(totalRes.rows[0].count));
+        const order = faqOrder(req);
 
         const result = await db.query(
-            `SELECT * FROM faq ${whereSql} ORDER BY category ASC, id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+            `SELECT * FROM faq ${whereSql} ORDER BY ${order.sql} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
             [...params, page.size, page.offset]
         );
         const cats = await db.query("SELECT DISTINCT category FROM faq WHERE category IS NOT NULL AND category <> '' ORDER BY category");
@@ -376,6 +397,8 @@ router.get('/faq', requireAuth, noCache, async (req, res) => {
             categories: cats.rows.map(r => r.category),
             search,
             category,
+            sort: order.sort,
+            direction: order.direction,
             page,
             queryString: queryWithoutPage(req),
             error: req.query.error || null,
