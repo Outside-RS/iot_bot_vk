@@ -1544,3 +1544,81 @@ describe('bot — завершение диалога', () => {
         assert.ok(notified[0].message.includes('Студент завершил диалог'), notified[0].message);
     });
 });
+
+describe('bot — уведомления администраторов', () => {
+    const { handleMessage } = require('../bot')._test;
+    const STUDENT = 99999995;
+    const ALENA = 99999996;   // уведомления включены
+    const IVAN = 99999997;    // уведомления включены
+    const MOLCHUN = 99999998; // уведомления выключены
+    const GROUP = 999000015;
+
+    const sent = [];
+    const vk = { api: { messages: { send: async (params) => { sent.push(params); return 1; } } } };
+    const ctx = (senderId, over = {}) => ({ senderId, text: null, attachments: [], send: async () => 1, ...over });
+    const to = (vkId) => sent.filter(m => String(m.peer_id) === String(vkId));
+    const lastTicket = async () => (await db.query('SELECT * FROM tickets WHERE student_vk_id = $1 ORDER BY id DESC LIMIT 1', [STUDENT])).rows[0];
+
+    before(async () => {
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[STUDENT, ALENA, IVAN, MOLCHUN]]);
+        await db.query("INSERT INTO users (vk_id, role, full_name, group_number, state) VALUES ($1, 'student', 'Тестов Тест', 'РИ-240944', 'main_menu')", [STUDENT]);
+        await db.query("INSERT INTO users (vk_id, role, full_name, state, notify_tickets) VALUES ($1, 'operator', 'Алёна', 'main_menu', TRUE), ($2, 'operator', 'Иван', 'main_menu', TRUE), ($3, 'operator', 'Молчун', 'main_menu', FALSE)", [ALENA, IVAN, MOLCHUN]);
+    });
+    after(async () => {
+        await db.query('DELETE FROM tickets WHERE student_vk_id = $1', [STUDENT]);
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[STUDENT, ALENA, IVAN, MOLCHUN]]);
+    });
+    beforeEach(() => { sent.length = 0; });
+
+    it('Новый вопрос приходит только тем, у кого уведомления включены', async () => {
+        await handleMessage(ctx(STUDENT, { messagePayload: { command: 'confirm_send', question: 'Когда пересдача?' } }), vk, GROUP);
+
+        assert.equal(to(ALENA).length, 1);
+        assert.equal(to(IVAN).length, 1);
+        assert.equal(to(MOLCHUN).length, 0, 'администратор отключил уведомления');
+    });
+
+    it('Когда вопрос берут в работу, студент и остальные видят имя администратора', async () => {
+        const ticket = await lastTicket();
+        await handleMessage(ctx(ALENA, { messagePayload: { command: 'take_ticket', ticket_id: ticket.id } }), vk, GROUP);
+
+        const student = to(STUDENT)[0];
+        assert.ok(student && student.message.includes('Администратор: Алёна'), student && student.message);
+        const ivan = to(IVAN)[0];
+        assert.ok(ivan && ivan.message.includes(`#${ticket.id}`) && ivan.message.includes('Алёна'), ivan && ivan.message);
+        assert.equal(to(MOLCHUN).length, 0);
+        assert.equal(to(ALENA).length, 0, 'взявшему уведомление ни к чему');
+    });
+
+    // Регрессия: проверка статуса и запись шли двумя запросами — при
+    // одновременном нажатии вопрос доставался обоим
+    it('Второй администратор получает отказ, вопрос остаётся у первого', async () => {
+        const ticket = await lastTicket();
+        const answers = [];
+        await handleMessage(ctx(IVAN, { messagePayload: { command: 'take_ticket', ticket_id: ticket.id }, send: async (m) => { answers.push(m); return 1; } }), vk, GROUP);
+
+        assert.ok(String(answers[0]).includes('уже взял'), String(answers[0]));
+        const row = (await db.query('SELECT operator_vk_id FROM tickets WHERE id = $1', [ticket.id])).rows[0];
+        assert.equal(String(row.operator_vk_id), String(ALENA));
+    });
+
+    it('Переключатель в профиле выключает и включает уведомления', async () => {
+        const state = async () => (await db.query('SELECT notify_tickets FROM users WHERE vk_id = $1', [ALENA])).rows[0].notify_tickets;
+        const shown = [];
+        const profileCtx = () => ctx(ALENA, { messagePayload: { command: 'toggle_notify' }, send: async (m) => { shown.push(m); return 1; } });
+
+        await handleMessage(profileCtx(), vk, GROUP);
+        assert.equal(await state(), false);
+        assert.ok(shown[0].message.includes('выключены'), shown[0].message);
+
+        await handleMessage(profileCtx(), vk, GROUP);
+        assert.equal(await state(), true);
+        assert.ok(shown[1].message.includes('включены'), shown[1].message);
+    });
+
+    it('Чужой не может переключить уведомления кнопкой', async () => {
+        const answers = [];
+        await handleMessage(ctx(STUDENT, { messagePayload: { command: 'toggle_notify' }, send: async (m) => { answers.push(m); return 1; } }), vk, GROUP);
+        assert.ok(String(answers[0]).includes('только администраторам'), String(answers[0]));
+    });
+});

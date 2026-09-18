@@ -34,6 +34,10 @@ const c = new Client({
     // не добавили вручную, кнопка «Передать администратору» падала с ошибкой 42703.
     await c.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_attachments JSONB');
 
+    // Уведомления администратора о новых вопросах: включаются и выключаются
+    // им самим в профиле бота. По умолчанию включены — как было до настройки.
+    await c.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_tickets BOOLEAN NOT NULL DEFAULT TRUE');
+
     // Перевод курса ищет студентов по сообществу
     await c.query('CREATE INDEX IF NOT EXISTS idx_users_vk_group ON users(vk_group_id)');
 

@@ -131,6 +131,8 @@ async function runMigration() {
                 ai_context JSONB DEFAULT '[]',
                 -- фото, присланные до вопроса: прикладываются к обращению администратору
                 pending_attachments JSONB,
+                -- уведомления администратора о новых вопросах (переключаются в боте)
+                notify_tickets BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 

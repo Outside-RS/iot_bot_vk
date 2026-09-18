@@ -95,6 +95,39 @@ async function getTicketIfParticipant(ticketId, vkId) {
     return res.rows[0] || null;
 }
 
+/** Администраторы, которым сейчас нужно слать уведомления о вопросах */
+async function notifiedOperators(exceptVkId = null) {
+    const res = await db.query(
+        `SELECT vk_id, full_name FROM users
+          WHERE role = 'operator' AND notify_tickets = TRUE AND ($1::bigint IS NULL OR vk_id <> $1)`,
+        [exceptVkId]
+    );
+    return res.rows;
+}
+
+/** Имя администратора для сообщений собеседнику */
+const operatorName = (fullName) => (fullName || '').trim() || 'без имени';
+
+/**
+ * Профиль администратора. Здесь же переключатель уведомлений: у всех
+ * администраторов один код входа не предполагается — профиль и имя
+ * заводятся каждому своим кодом в админке, а настройка живёт у него в боте.
+ */
+function adminProfile(user) {
+    const on = user.notify_tickets !== false;
+    return {
+        message: `👤 Администратор: ${operatorName(user.full_name)}\n`
+            + `🔔 Уведомления о новых вопросах: ${on ? 'включены' : 'выключены'}\n\n`
+            + 'Уведомления — это сообщения о новых вопросах и о том, что вопрос взял другой администратор. '
+            + 'Переписка по вашим диалогам приходит всегда.',
+        keyboard: Keyboard.builder()
+            .textButton({ label: on ? '🔕 Выключить уведомления' : '🔔 Включить уведомления', payload: { command: 'toggle_notify' }, color: on ? Keyboard.SECONDARY_COLOR : Keyboard.POSITIVE_COLOR }).row()
+            .textButton({ label: '✏️ Редактировать', color: Keyboard.PRIMARY_COLOR }).row()
+            .textButton({ label: '🚪 Выйти из аккаунта', payload: { command: 'logout' }, color: Keyboard.NEGATIVE_COLOR }).row()
+            .textButton({ label: '🏠 Главное меню', color: Keyboard.SECONDARY_COLOR })
+    };
+}
+
 async function getRole(vkId) {
     const res = await db.query('SELECT role FROM users WHERE vk_id = $1', [vkId]);
     return res.rows.length > 0 ? res.rows[0].role : null;
@@ -280,13 +313,28 @@ async function handleMessage(context, vk, groupId) {
                     console.warn(`[SECURITY] Отказ take_ticket: ${senderId} не администратор (тикет ${ticketId}) — возможна подделка кнопки`);
                     return context.send('Эта команда доступна только администраторам.');
                 }
-                const ticketRes = await db.query('SELECT * FROM tickets WHERE id = $1', [ticketId]);
-                if (ticketRes.rows.length === 0) return context.send('Тикет не найден.');
-                if (ticketRes.rows[0].status !== 'open') return context.send('Тикет уже занят.');
-                await db.query("UPDATE tickets SET operator_vk_id = $1, status = 'active' WHERE id = $2", [senderId, ticketId]);
+                // Условие status = 'open' прямо в UPDATE: иначе два администратора,
+                // нажавшие кнопку одновременно, забирали бы вопрос вдвоём
+                const taken = await db.query(
+                    "UPDATE tickets SET operator_vk_id = $1, status = 'active' WHERE id = $2 AND status = 'open' RETURNING *",
+                    [senderId, ticketId]
+                );
+                if (taken.rowCount === 0) {
+                    const exists = await db.query('SELECT operator_vk_id FROM tickets WHERE id = $1', [ticketId]);
+                    if (exists.rows.length === 0) return context.send('Вопрос не найден.');
+                    return context.send(`Вопрос #${ticketId} уже взял другой администратор.`);
+                }
+                const ticketRes = taken;
                 await db.query("UPDATE users SET current_chat_ticket_id = $1, state = 'chat_mode' WHERE vk_id = $2", [ticketId, senderId]);
-                console.info(`[TICKET] Тикет #${ticketId} взят администратором ${senderId}`);
-                await notify(vk, ticketRes.rows[0].student_vk_id, { message: `👨‍💻 Администратор подключился к вопросу #${ticketId}.`, keyboard: Keyboard.builder().textButton({ label: `Перейти к #${ticketId}`, payload: { command: 'open_chat', ticket_id: ticketId }, color: Keyboard.POSITIVE_COLOR }).inline() }, `уведомление: администратор взял тикет #${ticketId}`);
+                const takerName = operatorName((await db.query('SELECT full_name FROM users WHERE vk_id = $1', [senderId])).rows[0].full_name);
+                console.info(`[TICKET] Тикет #${ticketId} взят администратором ${senderId} (${takerName})`);
+                await notify(vk, ticketRes.rows[0].student_vk_id, { message: `👨‍💻 Ваш вопрос #${ticketId} в работе. Администратор: ${takerName}.`, keyboard: Keyboard.builder().textButton({ label: `Перейти к #${ticketId}`, payload: { command: 'open_chat', ticket_id: ticketId }, color: Keyboard.POSITIVE_COLOR }).inline() }, `уведомление: администратор взял тикет #${ticketId}`);
+
+                // Остальным администраторам, чтобы не открывали тот же вопрос.
+                // Формулировка без склонения имени: имена бывают любые.
+                for (const op of await notifiedOperators(senderId)) {
+                    await notify(vk, op.vk_id, { message: `🔔 Вопрос #${ticketId} принят в работу. Администратор: ${takerName}.` }, `уведомление: тикет #${ticketId} занят`);
+                }
                 await context.send({ message: `Вы взяли тикет #${ticketId}.`, keyboard: Keyboard.builder().textButton({ label: '🏁 Завершить этот тикет', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '⬅️ Назад к списку', color: Keyboard.SECONDARY_COLOR }) });
                 return;
             }
@@ -328,6 +376,19 @@ async function handleMessage(context, vk, groupId) {
                 await context.send({ message: `📝 Управление #${ticketId}`, keyboard: Keyboard.builder().textButton({ label: '✏️ Изменить текст', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '❌ Удалить заявку', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }) });
                 return;
             }
+            if (messagePayload.command === 'toggle_notify') {
+                if (await getRole(senderId) !== 'operator') {
+                    console.warn(`[SECURITY] Отказ toggle_notify: ${senderId} не администратор — возможна подделка кнопки`);
+                    return context.send('Эта команда доступна только администраторам.');
+                }
+                const upd = await db.query(
+                    'UPDATE users SET notify_tickets = NOT notify_tickets WHERE vk_id = $1 RETURNING *',
+                    [senderId]
+                );
+                const updated = upd.rows[0];
+                console.info(`[BOT] ${senderId}: уведомления о вопросах ${updated.notify_tickets ? 'включены' : 'выключены'}`);
+                return context.send(adminProfile(updated));
+            }
             if (messagePayload.command === 'confirm_send' || messagePayload.command === 'operator_request') {
                 // Вопрос уходит к администратору — ждать ответа ИИ больше незачем.
                 // Воркер проверяет наличие задачи перед отправкой ответа, поэтому
@@ -356,7 +417,7 @@ async function handleMessage(context, vk, groupId) {
                 const ticketId = newT.rows[0].id;
                 console.info(`[TICKET] Создан тикет #${ticketId} от ${senderId} (${messagePayload.command === 'operator_request' ? 'из диалога с ИИ' : 'из поиска'}): «${preview(qText, 120)}»${pendingAtts.length ? `, фото: ${pendingAtts.length}` : ''}`);
                 await context.send({ message: `✅ Вопрос отправлен администратору.`, keyboard: Keyboard.builder().textButton({ label: '🗂 Мои обращения', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR }).oneTime() });
-                const ops = await db.query(`SELECT vk_id FROM users WHERE role = 'operator'`);
+                const ops = { rows: await notifiedOperators() };
                 const attStr = pendingAtts.join(',');
                 const photoNote = pendingAtts.length > 0 ? `\n📎 Прикреплено фото: ${pendingAtts.length} шт.` : '';
 
@@ -631,7 +692,7 @@ async function processState(context, user, vk, groupId) {
                     }
                 } else if (text === '👤 Профиль') {
                     await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]);
-                    await context.send({ message: `👤 Администратор: ${user.full_name}`, keyboard: Keyboard.builder().textButton({ label: '✏️ Редактировать', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '🚪 Выйти из аккаунта', payload: { command: 'logout' }, color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '🏠 Главное меню', color: Keyboard.SECONDARY_COLOR }) });
+                    await context.send(adminProfile(user));
                 } else if (text === '⚠️ Жалоба / Отзыв') {
                     await db.query("UPDATE users SET state = 'feedback_mode' WHERE vk_id = $1", [senderId]);
                     await context.send({ message: 'Напишите вашу жалобу или отзыв о работе бота. Разработчик обязательно прочитает!', keyboard: Keyboard.builder().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }).oneTime() });
