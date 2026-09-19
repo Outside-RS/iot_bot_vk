@@ -1882,3 +1882,117 @@ describe('bot — текст вопроса доходит до админист
         assert.ok(withPhoto && withPhoto.attachment.includes('photo1_2'), 'фото должны прийти вместе с вопросом');
     });
 });
+
+describe('bot — списки обращений умещаются в сообщение ВКонтакте', () => {
+    const { handleMessage, sendTicketList, LIST_PAGE_SIZE, LIST_PREVIEW } = require('../bot')._test;
+    const ADMIN = 99999951;
+    const STUDENT = 99999952;
+    const GROUP = 999000019;
+
+    // Ограничения ВКонтакте: 4096 символов в сообщении, 6 строк в inline-клавиатуре
+    const VK_MESSAGE_LIMIT = 4096;
+    const VK_INLINE_ROWS = 6;
+
+    const sent = [];
+    const vk = { api: { messages: { send: async () => 1 } } };
+    const ctx = (senderId, over = {}) => ({
+        senderId, text: null, attachments: [], messagePayload: null,
+        send: async (m) => { sent.push(m); return 1; }, ...over
+    });
+    const listMessage = () => sent.find(m => m && m.keyboard && /Очередь|диалог|обращени/i.test(String(m.message)));
+    const rowsOf = (m) => (m && m.keyboard && m.keyboard.buttons ? m.keyboard.buttons.length : 0);
+    const labelsOf = (m) => [...JSON.stringify((m && m.keyboard) || {}).matchAll(/"label":"([^"]+)"/g)].map(x => x[1]);
+
+    // Девять вопросов по 3000 символов: вместе это больше 27 000 символов
+    const HUGE = 'Очень длинный вопрос студента. '.repeat(100);
+
+    before(async () => {
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[ADMIN, STUDENT]]);
+        await db.query(`INSERT INTO users (vk_id, role, full_name, group_number, state) VALUES
+            ($1, 'operator', 'Алёна', NULL, 'main_menu'),
+            ($2, 'student', 'Кузнецова Мария', 'РИ-240944', 'main_menu')`, [ADMIN, STUDENT]);
+        for (let i = 0; i < 9; i++) {
+            await db.query(
+                "INSERT INTO tickets (student_vk_id, question, status) VALUES ($1, $2, 'open')",
+                [STUDENT, `${HUGE} (вопрос ${i + 1})`]
+            );
+        }
+        assert.ok(HUGE.length > 2500, 'вопрос должен быть заведомо длинным');
+    });
+    after(async () => {
+        await db.query('DELETE FROM tickets WHERE student_vk_id = $1', [STUDENT]);
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[ADMIN, STUDENT]]);
+    });
+    beforeEach(() => { sent.length = 0; });
+
+    // Регрессия: список склеивал вопросы целиком — на длинных вопросах
+    // сообщение превышало лимит ВКонтакте и не отправлялось вообще
+    it('Очередь из девяти длинных вопросов умещается в лимит сообщения', async () => {
+        await handleMessage(ctx(ADMIN, { text: '📥 Очередь вопросов' }), vk, GROUP);
+
+        const list = listMessage();
+        assert.ok(list, 'список должен отправиться');
+        assert.ok(list.message.length < VK_MESSAGE_LIMIT, `длина сообщения ${list.message.length}`);
+        assert.ok(rowsOf(list) <= VK_INLINE_ROWS, `строк клавиатуры ${rowsOf(list)}`);
+    });
+
+    it('Показано, сколько обращений видно и сколько всего', async () => {
+        await handleMessage(ctx(ADMIN, { text: '📥 Очередь вопросов' }), vk, GROUP);
+
+        const list = listMessage();
+        assert.ok(list.message.includes(`Показаны 1–${LIST_PAGE_SIZE} из 9`), list.message.slice(0, 120));
+        assert.ok(labelsOf(list).includes('Вперёд ▶'), 'должна быть кнопка следующей страницы');
+        assert.ok(!labelsOf(list).includes('◀ Назад'), 'на первой странице кнопки назад быть не должно');
+    });
+
+    it('Вопрос в списке показан выдержкой, а не целиком', async () => {
+        await handleMessage(ctx(ADMIN, { text: '📥 Очередь вопросов' }), vk, GROUP);
+
+        const list = listMessage();
+        const longest = list.message.split('\n').reduce((a, b) => (a.length > b.length ? a : b));
+        assert.ok(longest.length <= LIST_PREVIEW + 5, `строка вопроса ${longest.length} символов`);
+        assert.ok(list.message.includes('…'), 'выдержка должна обрываться многоточием');
+    });
+
+    it('Перелистывание вперёд и назад показывает разные обращения', async () => {
+        await handleMessage(ctx(ADMIN, { messagePayload: { command: 'list_page', list: 'queue', page: 1 } }), vk, GROUP);
+        const second = listMessage();
+        assert.ok(second.message.includes(`Показаны ${LIST_PAGE_SIZE + 1}–${LIST_PAGE_SIZE * 2} из 9`), second.message.slice(0, 120));
+        const labels = labelsOf(second);
+        assert.ok(labels.includes('◀ Назад') && labels.includes('Вперёд ▶'));
+
+        sent.length = 0;
+        await handleMessage(ctx(ADMIN, { messagePayload: { command: 'list_page', list: 'queue', page: 2 } }), vk, GROUP);
+        const third = listMessage();
+        assert.ok(third.message.includes('из 9'));
+        assert.ok(!labelsOf(third).includes('Вперёд ▶'), 'на последней странице кнопки вперёд быть не должно');
+    });
+
+    it('Номер страницы за пределами списка не ломает вывод', async () => {
+        await handleMessage(ctx(ADMIN, { messagePayload: { command: 'list_page', list: 'queue', page: 999 } }), vk, GROUP);
+        const list = listMessage();
+        assert.ok(list && list.message.includes('из 9'), 'должна показаться последняя страница');
+    });
+
+    it('Студент не может открыть очередь администратора', async () => {
+        await handleMessage(ctx(STUDENT, { messagePayload: { command: 'list_page', list: 'queue', page: 0 } }), vk, GROUP);
+        assert.ok(String(sent[0]).includes('недоступен'), String(sent[0]));
+    });
+
+    it('Список своих обращений у студента тоже постраничный', async () => {
+        await handleMessage(ctx(STUDENT, { text: '🗂 Мои обращения' }), vk, GROUP);
+
+        const list = listMessage();
+        assert.ok(list.message.length < VK_MESSAGE_LIMIT);
+        assert.ok(list.message.includes('из 9'));
+        assert.ok(rowsOf(list) <= VK_INLINE_ROWS);
+    });
+
+    it('Пустой список сообщает об этом без клавиатуры', async () => {
+        await db.query("UPDATE tickets SET status = 'closed' WHERE student_vk_id = $1", [STUDENT]);
+        sent.length = 0;
+        await sendTicketList(ctx(ADMIN), ADMIN, 'queue');
+        assert.ok(String(sent[0]).includes('Очередь пуста'), String(sent[0]));
+        await db.query("UPDATE tickets SET status = 'open' WHERE student_vk_id = $1", [STUDENT]);
+    });
+});

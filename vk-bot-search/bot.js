@@ -68,7 +68,7 @@ async function notify(vk, peerId, params, what) {
 
 // Предел длины сообщения. ВКонтакте пропускает до 4096 символов, но столько
 // ни в переписке, ни в вопросе не нужно — ограничиваем разумной длиной.
-const MESSAGE_MAX_LENGTH = 2500;
+const MESSAGE_MAX_LENGTH = 4000;
 
 // Вопросы длиннее этого ИИ отвечает плохо: в базе знаний таких развёрнутых
 // формулировок нет, и модель начинает додумывать. Предлагаем сразу администратора.
@@ -88,6 +88,121 @@ const parseId = (value) => {
     const id = Number.parseInt(value, 10);
     return Number.isInteger(id) && id > 0 ? id : null;
 };
+
+// ==================== Списки обращений ====================
+// Одно сообщение ВКонтакте вмещает 4096 символов, а inline-клавиатура — 6 строк.
+// Раньше список вопросов склеивался целиком: три вопроса по 3000 символов —
+// и сообщение не отправлялось вовсе, администратор видел пустоту.
+// Поэтому: короткая выдержка вместо полного текста, несколько обращений
+// на страницу и кнопки перелистывания.
+
+const LIST_PAGE_SIZE = 4;          // строк на странице: ещё две строки клавиатуры нужны под «назад/вперёд»
+const LIST_PREVIEW = 280;          // сколько символов вопроса показываем в списке
+const LIST_TEXT_BUDGET = 3500;     // запас до лимита ВКонтакте на случай длинных имён
+
+/** Значок состояния обращения для списков студента */
+const ticketMark = (status) => (status === 'open' ? '⏳ ждёт' : (status === 'active' ? '🟢 в работе' : '🏁 завершено'));
+
+/**
+ * Описания списков: откуда брать строки, как их показывать и какая кнопка
+ * у каждой строки. Постраничный вывод одинаковый для всех.
+ */
+const TICKET_LISTS = {
+    queue: {
+        role: 'operator',
+        byUser: false,
+        title: '📥 Очередь вопросов',
+        empty: 'Очередь пуста 🎉',
+        countSql: "SELECT count(*) FROM tickets WHERE status = 'open'",
+        rowsSql: `SELECT t.id, t.question, u.full_name, u.group_number
+                    FROM tickets t JOIN users u ON t.student_vk_id = u.vk_id
+                   WHERE t.status = 'open'
+                   ORDER BY t.created_at ASC LIMIT $1 OFFSET $2`,
+        line: (t) => `🆔 #${t.id} — ${t.full_name || 'без имени'}${t.group_number ? ', ' + t.group_number : ''}\n${preview(t.question, LIST_PREVIEW)}`,
+        button: (t) => ({ label: `Взять #${t.id}`, payload: { command: 'take_ticket', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR })
+    },
+    dialogs: {
+        byUser: true,
+        role: 'operator',
+        title: '💬 Мои диалоги',
+        empty: 'Активных диалогов нет.',
+        countSql: "SELECT count(*) FROM tickets WHERE status = 'active' AND operator_vk_id = $1",
+        rowsSql: `SELECT t.id, t.question, u.full_name, u.group_number
+                    FROM tickets t JOIN users u ON t.student_vk_id = u.vk_id
+                   WHERE t.status = 'active' AND t.operator_vk_id = $1
+                   ORDER BY t.id DESC LIMIT $2 OFFSET $3`,
+        line: (t) => `🆔 #${t.id} — ${t.full_name || 'без имени'}${t.group_number ? ', ' + t.group_number : ''}\n${preview(t.question, LIST_PREVIEW)}`,
+        button: (t) => ({ label: `Перейти к #${t.id}`, payload: { command: 'open_chat', ticket_id: t.id }, color: Keyboard.PRIMARY_COLOR })
+    },
+    history: {
+        byUser: true,
+        role: 'operator',
+        title: '📚 Завершённые диалоги',
+        hint: 'Из любого можно сделать запись для базы знаний.',
+        empty: 'Завершённых диалогов пока нет.',
+        countSql: "SELECT count(*) FROM tickets WHERE status = 'closed' AND operator_vk_id = $1",
+        rowsSql: `SELECT t.id, t.question, u.full_name
+                    FROM tickets t JOIN users u ON t.student_vk_id = u.vk_id
+                   WHERE t.status = 'closed' AND t.operator_vk_id = $1
+                   ORDER BY t.id DESC LIMIT $2 OFFSET $3`,
+        line: (t) => `🆔 #${t.id} — ${t.full_name || 'без имени'}\n${preview(t.question, LIST_PREVIEW)}`,
+        button: (t) => ({ label: `📚 В базу #${t.id}`, payload: { command: 'faq_draft', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR })
+    },
+    my: {
+        byUser: true,
+        role: 'student',
+        title: '🗂 Ваши обращения',
+        empty: 'Вы ещё не обращались к администраторам.',
+        countSql: 'SELECT count(*) FROM tickets WHERE student_vk_id = $1',
+        rowsSql: `SELECT id, question, status FROM tickets
+                   WHERE student_vk_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+        line: (t) => `#${t.id} — ${ticketMark(t.status)}\n❓ ${preview(t.question, LIST_PREVIEW)}`,
+        button: (t) => (t.status === 'active'
+            ? { label: `Перейти к #${t.id}`, payload: { command: 'open_chat', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR }
+            : (t.status === 'open'
+                ? { label: `✏️ Изменить #${t.id}`, payload: { command: 'manage_ticket', ticket_id: t.id }, color: Keyboard.SECONDARY_COLOR }
+                : null))
+    }
+};
+
+/** Показывает одну страницу списка обращений */
+async function sendTicketList(context, senderId, listId, page = 0) {
+    const cfg = TICKET_LISTS[listId];
+    if (!cfg) return;
+
+    const params = cfg.byUser ? [senderId] : [];
+    const total = Number((await db.query(cfg.countSql, params)).rows[0].count);
+    if (total === 0) return context.send(cfg.empty);
+
+    const pages = Math.max(1, Math.ceil(total / LIST_PAGE_SIZE));
+    const current = Math.min(Math.max(page, 0), pages - 1);
+    const offset = current * LIST_PAGE_SIZE;
+
+    const rows = (await db.query(cfg.rowsSql, [...params, LIST_PAGE_SIZE, offset])).rows;
+
+    let msg = cfg.title + (cfg.hint ? `\n${cfg.hint}` : '');
+    if (pages > 1) msg += `\nПоказаны ${offset + 1}–${offset + rows.length} из ${total}`;
+
+    const kb = Keyboard.builder();
+    for (const row of rows) {
+        const line = `\n\n${cfg.line(row)}`;
+        // Страховка: если сообщение всё же подобралось к лимиту, обрываем строки
+        if (msg.length + line.length > LIST_TEXT_BUDGET) {
+            msg += '\n\n…остальные не поместились, откройте следующую страницу.';
+            break;
+        }
+        msg += line;
+        const button = cfg.button(row);
+        if (button) kb.textButton(button).row();
+    }
+
+    if (pages > 1) {
+        if (current > 0) kb.textButton({ label: '◀ Назад', payload: { command: 'list_page', list: listId, page: current - 1 }, color: Keyboard.SECONDARY_COLOR });
+        if (current < pages - 1) kb.textButton({ label: 'Вперёд ▶', payload: { command: 'list_page', list: listId, page: current + 1 }, color: Keyboard.SECONDARY_COLOR });
+    }
+
+    return context.send({ message: msg, keyboard: kb.inline() });
+}
 
 /**
  * Запоминает последний вопрос студента. В payload кнопки его класть нельзя:
@@ -113,9 +228,6 @@ async function getTicketIfParticipant(ticketId, vkId) {
 // Диалог администратора со студентом — готовый материал для базы знаний:
 // вопрос уже задан живым языком, ответ уже проверен человеком. Разбирает
 // переписку GigaChat, но записывает её только после подтверждения администратором.
-
-/** Сколько последних диалогов показываем в истории */
-const DIALOG_HISTORY_LIMIT = 5;
 
 /** Переписка по обращению одним текстом — то, что уходит на разбор модели */
 async function buildDialogText(ticket) {
@@ -479,6 +591,17 @@ async function handleMessage(context, vk, groupId) {
                 await context.send({ message: `📝 Управление #${ticketId}`, keyboard: Keyboard.builder().textButton({ label: '✏️ Изменить текст', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '❌ Удалить заявку', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '🔙 Назад', color: Keyboard.SECONDARY_COLOR }) });
                 return;
             }
+            if (messagePayload.command === 'list_page') {
+                const cfg = TICKET_LISTS[messagePayload.list];
+                if (!cfg) return context.send('Неизвестный список.');
+                const role = await getRole(senderId);
+                if (cfg.role !== role) {
+                    console.warn(`[SECURITY] Отказ list_page (${messagePayload.list}): роль ${role || 'нет'} у ${senderId}`);
+                    return context.send('Этот список вам недоступен.');
+                }
+                const page = Number.parseInt(messagePayload.page, 10);
+                return sendTicketList(context, senderId, messagePayload.list, Number.isInteger(page) ? page : 0);
+            }
             if (['faq_draft', 'faq_save', 'faq_retry', 'faq_cancel'].includes(messagePayload.command)) {
                 if (await getRole(senderId) !== 'operator') {
                     console.warn(`[SECURITY] Отказ ${messagePayload.command}: ${senderId} не администратор — возможна подделка кнопки`);
@@ -828,42 +951,15 @@ async function processState(context, user, vk, groupId) {
         case 'main_menu':
             if (user.role === 'operator') {
                 if (text === '📥 Очередь вопросов') {
-                    const q = await db.query(`SELECT t.id, t.question, u.full_name, u.group_number FROM tickets t JOIN users u ON t.student_vk_id = u.vk_id WHERE t.status = 'open' ORDER BY t.created_at ASC LIMIT 5`);
-                    if (q.rows.length === 0) { await context.send('Очередь пуста 🎉'); await mainMenu(context, user); }
-                    else {
-                        let msg = '📥 Очередь:\n'; let kb = Keyboard.builder();
-                        q.rows.forEach(t => { msg += `\n🆔 #${t.id} [${t.full_name} ${t.group_number}]: ${t.question}`; kb.textButton({ label: `Взять #${t.id}`, payload: { command: 'take_ticket', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR }).row(); });
-                        await context.send({ message: msg, keyboard: kb.inline() }); await mainMenu(context, user);
-                    }
+                    await sendTicketList(context, senderId, 'queue');
+                    await mainMenu(context, user);
                 } else if (text === '💬 Мои диалоги') {
-                    const q = await db.query(`SELECT t.id, t.question, u.full_name FROM tickets t JOIN users u ON t.student_vk_id = u.vk_id WHERE t.status = 'active' AND t.operator_vk_id = $1`, [senderId]);
-                    if (q.rows.length === 0) { await context.send('Нет активных диалогов.'); await mainMenu(context, user); }
-                    else {
-                        let msg = '💬 Диалоги:\n'; let kb = Keyboard.builder();
-                        q.rows.forEach(t => { msg += `\n🆔 #${t.id} [${t.full_name}]: ${t.question}`; kb.textButton({ label: `Перейти к #${t.id}`, payload: { command: 'open_chat', ticket_id: t.id }, color: Keyboard.PRIMARY_COLOR }).row(); });
-                        await context.send({ message: msg, keyboard: kb.inline() }); await mainMenu(context, user);
-                    }
+                    await sendTicketList(context, senderId, 'dialogs');
+                    await mainMenu(context, user);
                 } else if (text === '📚 История диалогов') {
-                    // Завершённые обращения этого администратора: из любого можно
-                    // сделать запись базы знаний, даже если в момент завершения пропустили
-                    const closed = await db.query(
-                        `SELECT t.id, t.question, u.full_name
-                           FROM tickets t JOIN users u ON t.student_vk_id = u.vk_id
-                          WHERE t.operator_vk_id = $1 AND t.status = 'closed'
-                          ORDER BY t.id DESC LIMIT $2`,
-                        [senderId, DIALOG_HISTORY_LIMIT]
-                    );
-                    if (closed.rows.length === 0) {
-                        await context.send('Завершённых диалогов пока нет.');
-                    } else {
-                        let msg = '📚 Последние завершённые диалоги.\nВыберите, из какого сделать запись для базы знаний:\n';
-                        const kb = Keyboard.builder();
-                        closed.rows.forEach(t => {
-                            msg += `\n#${t.id} [${t.full_name}]: ${preview(t.question, 90)}`;
-                            kb.textButton({ label: `📚 В базу #${t.id}`, payload: { command: 'faq_draft', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR }).row();
-                        });
-                        await context.send({ message: msg, keyboard: kb.inline() });
-                    }
+                    // Завершённые обращения: из любого можно сделать запись базы
+                    // знаний, даже если в момент завершения предложение пропустили
+                    await sendTicketList(context, senderId, 'history');
                     await mainMenu(context, user);
                 } else if (text === '👤 Профиль') {
                     await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]);
@@ -875,18 +971,8 @@ async function processState(context, user, vk, groupId) {
             } else {
                 if (text === '✉️ Задать вопрос') { await db.query("UPDATE users SET state = 'ask_question_mode', ai_context = '[]' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Напишите вопрос:', keyboard: Keyboard.builder().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).oneTime() }); }
                 else if (text === '🗂 Мои обращения') {
-                    const q = await db.query(`SELECT id, question, status FROM tickets WHERE student_vk_id = $1 ORDER BY created_at DESC LIMIT 5`, [senderId]);
-                    if (q.rows.length === 0) { await context.send('Нет обращений.'); await mainMenu(context, user); }
-                    else {
-                        let msg = '🗂 Ваши обращения:\n'; let kb = Keyboard.builder();
-                        q.rows.forEach(t => {
-                            const st = (t.status === 'open' ? '⏳' : (t.status === 'active' ? '🟢' : '🏁'));
-                            msg += `\n#${t.id}: ${st}\n❓ ${t.question}`;
-                            if (t.status === 'active') kb.textButton({ label: `Перейти к #${t.id}`, payload: { command: 'open_chat', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR }).row();
-                            else if (t.status === 'open') kb.textButton({ label: `✏️ Упр. #${t.id}`, payload: { command: 'manage_ticket', ticket_id: t.id }, color: Keyboard.SECONDARY_COLOR }).row();
-                        });
-                        await context.send({ message: msg, keyboard: kb.inline() }); await mainMenu(context, user);
-                    }
+                    await sendTicketList(context, senderId, 'my');
+                    await mainMenu(context, user);
                 } else if (text === '👤 Профиль') {
                     await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]);
                     await context.send({ message: `👤 Студент: ${user.full_name}\nГруппа: ${user.group_number}`, keyboard: Keyboard.builder().textButton({ label: '✏️ Редактировать', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '❌ Удалить профиль', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '🏠 Главное меню', color: Keyboard.SECONDARY_COLOR }) });
@@ -1050,4 +1136,4 @@ module.exports = createBotInstance;
 module.exports.isGroupAllowed = isGroupAllowed;
 module.exports.getAllowedGroupIds = getAllowedGroupIds;
 // Для тестов: обработчик сообщений без подключения к VK
-module.exports._test = { handleMessage, instrumentSend, reconcileStudentCourse, checkGroupAgainstCommunity, codeLockRemaining, registerCodeFailure, codeAttempts, enqueueAiTask, AI_QUESTION_MAX_LENGTH, LONG_WAIT_SECONDS, buildDialogText, prepareFaqDraft, rememberQuestion };
+module.exports._test = { handleMessage, instrumentSend, reconcileStudentCourse, checkGroupAgainstCommunity, codeLockRemaining, registerCodeFailure, codeAttempts, enqueueAiTask, AI_QUESTION_MAX_LENGTH, LONG_WAIT_SECONDS, buildDialogText, prepareFaqDraft, rememberQuestion, sendTicketList, LIST_PAGE_SIZE, LIST_PREVIEW };
