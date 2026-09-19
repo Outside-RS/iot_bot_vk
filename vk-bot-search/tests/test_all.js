@@ -1786,3 +1786,99 @@ describe('bot — запись в базу знаний из диалога', ()
         assert.ok(String(lastMessage()).includes('Черновик не найден'), String(lastMessage()));
     });
 });
+
+describe('bot — текст вопроса доходит до администратора', () => {
+    const { handleMessage } = require('../bot')._test;
+    const STUDENT = 99999961;
+    const ADMIN = 99999962;
+    const GROUP = 999000018;
+
+    const sent = [];
+    const notified = [];
+    const vk = { api: { messages: { send: async (p) => { notified.push(p); return 1; } } } };
+    const ctx = (senderId, over = {}) => ({
+        senderId, text: null, attachments: [], messagePayload: null,
+        send: async (m) => { sent.push(m); return 1; }, ...over
+    });
+    // Длиннее лимита payload у ВКонтакте (255 символов)
+    const LONG = 'Здравствуйте! Подскажите, пожалуйста, как перевестись на другое направление внутри института: ' +
+        'какие документы нужны, до какого числа подавать заявление, теряется ли при этом бюджетное место ' +
+        'и что будет с академической разницей по предметам за первый курс? Заранее спасибо за ответ.';
+
+    const payloadsOf = (m) => [...JSON.stringify((m && m.keyboard) || {}).matchAll(/"payload":"([^"]*)"/g)].map(x => x[1]);
+
+    before(async () => {
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[STUDENT, ADMIN]]);
+        await db.query(`INSERT INTO users (vk_id, role, full_name, group_number, state) VALUES
+            ($1, 'student', 'Кузнецова Мария', 'РИ-240944', 'ask_question_mode'),
+            ($2, 'operator', 'Алёна', NULL, 'main_menu')`, [STUDENT, ADMIN]);
+        assert.ok(LONG.length > 255, 'вопрос должен быть длиннее лимита payload');
+    });
+    after(async () => {
+        await db.query('DELETE FROM tickets WHERE student_vk_id = $1', [STUDENT]);
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[STUDENT, ADMIN]]);
+    });
+    beforeEach(async () => {
+        sent.length = 0;
+        notified.length = 0;
+        await db.query('DELETE FROM tickets WHERE student_vk_id = $1', [STUDENT]);
+        await db.query("UPDATE users SET state = 'ask_question_mode', pending_question = NULL, pending_attachments = NULL WHERE vk_id = $1", [STUDENT]);
+    });
+
+    // Регрессия: текст вопроса клали в payload кнопки, где у ВКонтакте лимит
+    // 255 символов — на длинном вопросе сообщение с кнопками не отправлялось
+    it('Кнопки под ответом не несут текст вопроса, каким бы длинным он ни был', async () => {
+        await handleMessage(ctx(STUDENT, { text: LONG }), vk, GROUP);
+
+        const withButtons = sent.filter(m => m && m.keyboard);
+        assert.ok(withButtons.length > 0, 'бот должен предложить варианты');
+        for (const message of withButtons) {
+            for (const payload of payloadsOf(message)) {
+                assert.ok(payload.length <= 255, `payload ${payload.length} символов: ${payload.slice(0, 80)}`);
+                assert.ok(!payload.includes('перевестись'), 'текста вопроса в кнопке быть не должно');
+            }
+        }
+    });
+
+    it('Полный текст длинного вопроса доходит до обращения и до администраторов', async () => {
+        await handleMessage(ctx(STUDENT, { text: LONG }), vk, GROUP);
+        await handleMessage(ctx(STUDENT, { messagePayload: { command: 'confirm_send' } }), vk, GROUP);
+
+        const ticket = (await db.query('SELECT * FROM tickets WHERE student_vk_id = $1', [STUDENT])).rows[0];
+        assert.ok(ticket, 'обращение должно создаться');
+        assert.equal(ticket.question, LONG, 'в обращении должен быть весь текст');
+
+        const toAdmin = notified.find(n => String(n.peer_id) === String(ADMIN));
+        assert.ok(toAdmin && toAdmin.message.includes('академической разницей'), 'администратор получает вопрос целиком');
+    });
+
+    // Раньше администратор видел только «Вы взяли тикет #N» и должен был
+    // искать сам вопрос выше по переписке
+    it('При взятии обращения администратор видит вопрос и кто его задал', async () => {
+        await handleMessage(ctx(STUDENT, { text: LONG }), vk, GROUP);
+        await handleMessage(ctx(STUDENT, { messagePayload: { command: 'confirm_send' } }), vk, GROUP);
+        const ticket = (await db.query('SELECT * FROM tickets WHERE student_vk_id = $1', [STUDENT])).rows[0];
+
+        sent.length = 0;
+        await handleMessage(ctx(ADMIN, { messagePayload: { command: 'take_ticket', ticket_id: ticket.id } }), vk, GROUP);
+
+        const shown = sent.map(m => (typeof m === 'string' ? m : m.message)).join('\n');
+        assert.ok(shown.includes('Кузнецова Мария'), shown.slice(0, 120));
+        assert.ok(shown.includes('РИ-240944'));
+        assert.ok(shown.includes('академической разницей'), 'вопрос должен быть показан целиком');
+    });
+
+    it('Фото из вопроса приходят администратору при взятии обращения', async () => {
+        await db.query("UPDATE users SET pending_attachments = $1 WHERE vk_id = $2", [JSON.stringify(['photo1_2', 'photo3_4']), STUDENT]);
+        await handleMessage(ctx(STUDENT, { text: 'Вот скриншот ошибки' }), vk, GROUP);
+        await handleMessage(ctx(STUDENT, { messagePayload: { command: 'confirm_send' } }), vk, GROUP);
+
+        const ticket = (await db.query('SELECT * FROM tickets WHERE student_vk_id = $1', [STUDENT])).rows[0];
+        assert.deepEqual(ticket.attachments, ['photo1_2', 'photo3_4'], 'вложения должны храниться в обращении');
+
+        sent.length = 0;
+        await handleMessage(ctx(ADMIN, { messagePayload: { command: 'take_ticket', ticket_id: ticket.id } }), vk, GROUP);
+        const withPhoto = sent.find(m => m && m.attachment);
+        assert.ok(withPhoto && withPhoto.attachment.includes('photo1_2'), 'фото должны прийти вместе с вопросом');
+    });
+});

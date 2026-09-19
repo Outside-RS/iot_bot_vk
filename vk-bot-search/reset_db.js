@@ -131,6 +131,8 @@ async function runMigration() {
                 ai_context JSONB DEFAULT '[]',
                 -- фото, присланные до вопроса: прикладываются к обращению администратору
                 pending_attachments JSONB,
+                -- последний вопрос студента: в payload кнопки он не помещается (лимит VK — 255 символов)
+                pending_question TEXT,
                 -- уведомления администратора о новых вопросах (переключаются в боте)
                 notify_tickets BOOLEAN NOT NULL DEFAULT TRUE,
                 -- черновик записи базы знаний, пока администратор его не подтвердил
@@ -193,6 +195,9 @@ async function runMigration() {
                 operator_vk_id BIGINT,
                 question TEXT NOT NULL,
                 status TEXT DEFAULT 'open',
+                -- фото, присланные вместе с вопросом: их видит любой администратор,
+                -- взявший обращение, а не только получивший уведомление
+                attachments TEXT[],
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX tickets_status_idx ON tickets (status);

@@ -38,6 +38,15 @@ const c = new Client({
     // им самим в профиле бота. По умолчанию включены — как было до настройки.
     await c.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_tickets BOOLEAN NOT NULL DEFAULT TRUE');
 
+    // Последний вопрос студента. Раньше он ехал в payload кнопки «Передать
+    // администратору», а там лимит ВКонтакте — 255 символов: на длинном вопросе
+    // кнопка становилась недопустимой и сообщение не отправлялось вовсе.
+    await c.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_question TEXT');
+
+    // Вложения обращения: чтобы фото видел любой администратор, взявший вопрос,
+    // а не только тот, кому пришло уведомление
+    await c.query('ALTER TABLE tickets ADD COLUMN IF NOT EXISTS attachments TEXT[]');
+
     // Черновик записи базы знаний: администратор подтверждает его в боте
     await c.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS faq_draft JSONB');
 

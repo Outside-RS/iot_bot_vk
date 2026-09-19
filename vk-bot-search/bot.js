@@ -89,6 +89,17 @@ const parseId = (value) => {
     return Number.isInteger(id) && id > 0 ? id : null;
 };
 
+/**
+ * Запоминает последний вопрос студента. В payload кнопки его класть нельзя:
+ * у ВКонтакте там лимит 255 символов, и на длинном вопросе кнопка становится
+ * недопустимой — сообщение не отправляется совсем.
+ */
+async function rememberQuestion(vkId, question) {
+    const text = (question || '').trim();
+    if (!text) return;
+    await db.query('UPDATE users SET pending_question = $1 WHERE vk_id = $2', [text, vkId]);
+}
+
 // Возвращает тикет, только если пользователь — его участник (студент или назначенный админ)
 async function getTicketIfParticipant(ticketId, vkId) {
     const res = await db.query(
@@ -383,7 +394,7 @@ async function handleMessage(context, vk, groupId) {
                     console.info(`[SEARCH] ${senderId} выбрал вариант FAQ #${faqId}: «${preview(row.question, 80)}»`);
                     await context.send({
                         message: `📚 ${row.question}\n\n${row.answer}`,
-                        keyboard: Keyboard.builder().textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send', question: row.question }, color: Keyboard.POSITIVE_COLOR }).row().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).oneTime()
+                        keyboard: Keyboard.builder().textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send' }, color: Keyboard.POSITIVE_COLOR }).row().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).oneTime()
                     });
                 } else { await context.send('Ошибка: ответ не найден.'); }
                 return;
@@ -418,7 +429,16 @@ async function handleMessage(context, vk, groupId) {
                 for (const op of await notifiedOperators(senderId)) {
                     await notify(vk, op.vk_id, { message: `🔔 Вопрос #${ticketId} принят в работу. Администратор: ${takerName}.` }, `уведомление: тикет #${ticketId} занят`);
                 }
-                await context.send({ message: `Вы взяли тикет #${ticketId}.`, keyboard: Keyboard.builder().textButton({ label: '🏁 Завершить этот тикет', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '⬅️ Назад к списку', color: Keyboard.SECONDARY_COLOR }) });
+                // Показываем вопрос целиком: в уведомлении он мог потеряться среди
+                // других сообщений, а администратору нужно видеть, с чем работать
+                const ticket = ticketRes.rows[0];
+                const student = (await db.query('SELECT full_name, group_number FROM users WHERE vk_id = $1', [ticket.student_vk_id])).rows[0] || {};
+                const who = [student.full_name, student.group_number].filter(Boolean).join(', ') || `VK ID ${ticket.student_vk_id}`;
+                await context.send({
+                    message: `📩 Вопрос #${ticketId} от ${who}:\n\n${ticket.question}`,
+                    attachment: (ticket.attachments && ticket.attachments.length) ? ticket.attachments.join(',') : undefined
+                });
+                await context.send({ message: 'Пишите ответ прямо сюда — студент получит его в этом диалоге.', keyboard: Keyboard.builder().textButton({ label: '🏁 Завершить этот тикет', color: Keyboard.NEGATIVE_COLOR }).row().textButton({ label: '⬅️ Назад к списку', color: Keyboard.SECONDARY_COLOR }) });
                 return;
             }
             if (messagePayload.command === 'open_chat') {
@@ -515,22 +535,28 @@ async function handleMessage(context, vk, groupId) {
                     console.info(`[QUEUE] ${senderId}: вопрос снят с очереди ИИ — передан администратору`);
                 }
 
-                const userRes = await db.query('SELECT group_number, full_name, ai_context, pending_attachments FROM users WHERE vk_id = $1', [senderId]);
+                const userRes = await db.query('SELECT group_number, full_name, ai_context, pending_attachments, pending_question FROM users WHERE vk_id = $1', [senderId]);
                 const user = userRes.rows[0];
 
-                let qText = messagePayload.question || text || "Вопрос из AI диалога";
+                // Порядок важен: в базе лежит полный текст, в payload — только то,
+                // что поместилось в 255 символов у старых кнопок
+                let qText = user.pending_question || messagePayload.question || text || 'Вопрос из диалога с ИИ';
 
-                // Если вопрос не влез в payload (лимит 255), берем последнее сообщение из контекста
-                if (messagePayload.command === 'operator_request' && !messagePayload.question && user.ai_context) {
+                if (!user.pending_question && !messagePayload.question && user.ai_context) {
                     const lastUserMsg = [...user.ai_context].reverse().find(m => m.role === 'user');
                     if (lastUserMsg) qText = lastUserMsg.content;
                 }
 
                 // Достаём временно сохранённые вложения (фото) и очищаем их
                 const pendingAtts = user.pending_attachments || [];
-                await db.query("UPDATE users SET state = 'main_menu', pending_attachments = NULL WHERE vk_id = $1", [senderId]);
+                await db.query("UPDATE users SET state = 'main_menu', pending_attachments = NULL, pending_question = NULL WHERE vk_id = $1", [senderId]);
 
-                const newT = await db.query("INSERT INTO tickets (student_vk_id, question) VALUES ($1, $2) RETURNING id", [senderId, qText]);
+                // Вложения храним в самом обращении: их должен видеть любой
+                // администратор, который возьмёт вопрос, а не только получивший уведомление
+                const newT = await db.query(
+                    'INSERT INTO tickets (student_vk_id, question, attachments) VALUES ($1, $2, $3) RETURNING id',
+                    [senderId, qText, pendingAtts.length ? pendingAtts : null]
+                );
                 const ticketId = newT.rows[0].id;
                 console.info(`[TICKET] Создан тикет #${ticketId} от ${senderId} (${messagePayload.command === 'operator_request' ? 'из диалога с ИИ' : 'из поиска'}): «${preview(qText, 120)}»${pendingAtts.length ? `, фото: ${pendingAtts.length}` : ''}`);
                 await context.send({ message: `✅ Вопрос отправлен администратору.`, keyboard: Keyboard.builder().textButton({ label: '🗂 Мои обращения', color: Keyboard.PRIMARY_COLOR }).row().textButton({ label: '👤 Профиль', color: Keyboard.SECONDARY_COLOR }).oneTime() });
@@ -563,7 +589,8 @@ async function handleMessage(context, vk, groupId) {
                 const localUser = uRes.rows[0];
                 if (!localUser) return;
 
-                const qText = messagePayload.question || text || "Вопрос для ИИ";
+                // Сначала из базы: там полный текст, в payload он мог не поместиться
+                const qText = localUser.pending_question || messagePayload.question || text || 'Вопрос для ИИ';
                 console.info(`[BOT] ${senderId} нажал «Спросить ИИ» для вопроса «${preview(qText, 120)}»`);
                 try {
                     const faqHints = await buildDialogHints(qText, await searchFaq(qText, 8), localUser.ai_context);
@@ -705,6 +732,7 @@ async function processState(context, user, vk, groupId) {
             }
 
             const safeText = text || '';
+            await rememberQuestion(senderId, safeText);
 
             // 1. ЕДИНЫЙ ПОИСК (лексика + нечёткий) — см. faq_search.js
             // Сам запрос и вклад лексики/триграмм пишет searchFaq (уровень DEBUG)
@@ -727,9 +755,9 @@ async function processState(context, user, vk, groupId) {
                         await context.send({
                             message: `📚 ${best.question}\n\n${best.answer}`,
                             keyboard: Keyboard.builder()
-                                .textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send', question: safeText }, color: Keyboard.POSITIVE_COLOR })
+                                .textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send' }, color: Keyboard.POSITIVE_COLOR })
                                 .row()
-                                .textButton({ label: '🤖 Спросить ИИ-ассистента', payload: { command: 'ask_ai', question: safeText }, color: Keyboard.PRIMARY_COLOR })
+                                .textButton({ label: '🤖 Спросить ИИ-ассистента', payload: { command: 'ask_ai' }, color: Keyboard.PRIMARY_COLOR })
                                 .row()
                                 .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR })
                                 .oneTime()
@@ -751,9 +779,9 @@ async function processState(context, user, vk, groupId) {
                         }).row();
                     });
 
-                    kb.textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send', question: safeText }, color: Keyboard.POSITIVE_COLOR })
+                    kb.textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send' }, color: Keyboard.POSITIVE_COLOR })
                         .row()
-                        .textButton({ label: '🤖 Спросить ИИ-ассистента', payload: { command: 'ask_ai', question: safeText }, color: Keyboard.PRIMARY_COLOR })
+                        .textButton({ label: '🤖 Спросить ИИ-ассистента', payload: { command: 'ask_ai' }, color: Keyboard.PRIMARY_COLOR })
                         .row()
                         .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR });
 
@@ -924,6 +952,7 @@ function formatWait(seconds) {
 async function enqueueAiTask(context, user, question, faqContextText, groupId) {
     const senderId = user.vk_id;
     try {
+        await rememberQuestion(senderId, question);
         // Защита от спама на ВСЕХ путях постановки задачи.
         // Раньше проверка жила только в состоянии ai_dialogue_mode, а кнопка
         // «Спросить ИИ» обрабатывается до машины состояний и её обходила —
@@ -964,7 +993,7 @@ async function enqueueAiTask(context, user, question, faqContextText, groupId) {
             await context.send({
                 message: '⚠️ Сейчас ИИ-ассистент испытывает экстремальную нагрузку. Пожалуйста, передайте вопрос администраторам.',
                 keyboard: Keyboard.builder()
-                    .textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send', question: question }, color: Keyboard.POSITIVE_COLOR })
+                    .textButton({ label: '✉️ Передать администратору', payload: { command: 'confirm_send' }, color: Keyboard.POSITIVE_COLOR })
                     .row()
                     .textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR })
                     .oneTime()
@@ -1021,4 +1050,4 @@ module.exports = createBotInstance;
 module.exports.isGroupAllowed = isGroupAllowed;
 module.exports.getAllowedGroupIds = getAllowedGroupIds;
 // Для тестов: обработчик сообщений без подключения к VK
-module.exports._test = { handleMessage, instrumentSend, reconcileStudentCourse, checkGroupAgainstCommunity, codeLockRemaining, registerCodeFailure, codeAttempts, enqueueAiTask, AI_QUESTION_MAX_LENGTH, LONG_WAIT_SECONDS, buildDialogText, prepareFaqDraft };
+module.exports._test = { handleMessage, instrumentSend, reconcileStudentCourse, checkGroupAgainstCommunity, codeLockRemaining, registerCodeFailure, codeAttempts, enqueueAiTask, AI_QUESTION_MAX_LENGTH, LONG_WAIT_SECONDS, buildDialogText, prepareFaqDraft, rememberQuestion };
