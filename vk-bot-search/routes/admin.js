@@ -141,11 +141,17 @@ router.post('/login', loginLimiter, (req, res) => {
             return res.status(500).render('login', { error: 'Ошибка сервера, попробуйте ещё раз' });
         }
         req.session.isAdmin = true;
+        // Успешный вход тоже в журнал: пароль от панели общий на всех
+        // администраторов, и по адресу видно, кто и откуда заходил
+        console.info(`[SECURITY] Вход в панель с IP ${req.ip}`);
         req.session.save(() => res.redirect('/'));
     });
 });
 
 router.get('/logout', (req, res) => {
+    if (req.session && req.session.isAdmin) {
+        console.info(`[SECURITY] Выход из панели, IP ${req.ip}`);
+    }
     req.session.destroy(() => res.redirect('/login'));
 });
 

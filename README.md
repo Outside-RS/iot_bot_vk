@@ -208,6 +208,7 @@ vk-bot-search/
 ├── backup/             контейнер резервных копий и приём на сервере
 ├── tests/              тесты
 ├── Caddyfile           HTTPS
+├── frpc-watchdog.sh    присмотр за туннелем: перезапуск, если frpc завис
 └── docker-compose.yml  bot, db, caddy, frpc, backup
 ```
 

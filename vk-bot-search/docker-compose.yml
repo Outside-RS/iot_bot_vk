@@ -89,8 +89,13 @@ services:
   frpc:
     image: snowdreamtech/frpc:latest
     restart: unless-stopped
+    # Запускаем frpc не напрямую, а под присмотром: сам он после обрыва связи
+    # иногда остаётся в бесконечных попытках подключения и не оживает даже
+    # когда сеть вернулась. Подробности — в frpc-watchdog.sh
+    command: [ "sh", "/frpc-watchdog.sh" ]
     volumes:
       - ./frpc.toml:/etc/frp/frpc.toml
+      - ./frpc-watchdog.sh:/frpc-watchdog.sh:ro
     depends_on:
       - caddy
 
