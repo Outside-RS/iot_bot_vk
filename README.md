@@ -180,7 +180,7 @@ docker compose up -d --build
 | `node index.js` | запуск бота и веб-панели |
 | `node reset_db.js` | создать схему с нуля — **удаляет все таблицы**, спрашивает подтверждение |
 | `node migrate_update.js` | обновить существующую базу под текущий код, идемпотентно |
-| `node update_faq.js` | загрузить `faq_data.json` в базу |
+| `node update_faq.js` | дополнить базу знаний из `faq_data.json`; `--replace` — заменить её целиком |
 | `npm test` | 158 тестов, нужна PostgreSQL |
 | `node tests/eval_answers.js` | прогон контрольных вопросов через живую модель (расходует токены) |
 
