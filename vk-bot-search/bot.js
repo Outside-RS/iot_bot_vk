@@ -107,55 +107,76 @@ const ticketMark = (status) => (status === 'open' ? '⏳ ждёт' : (status ===
  * Описания списков: откуда брать строки, как их показывать и какая кнопка
  * у каждой строки. Постраничный вывод одинаковый для всех.
  */
+/**
+ * Название сообщества для подсказок вида «откройте сообщество …».
+ * Без названия подсказка бесполезна: по номеру сообщества человек не поймёт,
+ * куда идти.
+ */
+async function groupTitle(groupId) {
+    try {
+        const r = await db.query('SELECT group_name FROM vk_groups WHERE group_id = $1', [groupId]);
+        const name = r.rows[0] && r.rows[0].group_name;
+        return name ? `«${name}»` : `с номером ${groupId}`;
+    } catch (err) {
+        console.warn('[TICKET] Не удалось узнать название сообщества:', err.message);
+        return `с номером ${groupId}`;
+    }
+}
+
+// Все списки обращений ограничены одним сообществом. Причина не в приватности,
+// а в доставке: переписка по обращению идёт через токен того сообщества, где
+// задан вопрос. Возьми администратор чужое обращение из другого диалога — его
+// ответы уходили бы от имени не того сообщества, ВКонтакте отказал бы (студент
+// этому сообществу не писал), а администратор об этом даже не узнал бы.
 const TICKET_LISTS = {
     queue: {
         role: 'operator',
-        byUser: false,
+        params: (senderId, groupId) => [groupId],
         title: '📥 Очередь вопросов',
         empty: 'Очередь пуста 🎉',
-        countSql: "SELECT count(*) FROM tickets WHERE status = 'open'",
+        countSql: "SELECT count(*) FROM tickets WHERE status = 'open' AND vk_group_id = $1",
         rowsSql: `SELECT t.id, t.question, u.full_name, u.group_number
                     FROM tickets t JOIN users u ON t.student_vk_id = u.vk_id
-                   WHERE t.status = 'open'
-                   ORDER BY t.created_at ASC LIMIT $1 OFFSET $2`,
+                   WHERE t.status = 'open' AND t.vk_group_id = $1
+                   ORDER BY t.created_at ASC LIMIT $2 OFFSET $3`,
         line: (t) => `🆔 #${t.id} — ${t.full_name || 'без имени'}${t.group_number ? ', ' + t.group_number : ''}\n${preview(t.question, LIST_PREVIEW)}`,
         button: (t) => ({ label: `Взять #${t.id}`, payload: { command: 'take_ticket', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR })
     },
     dialogs: {
-        byUser: true,
+        params: (senderId, groupId) => [senderId, groupId],
         role: 'operator',
         title: '💬 Мои диалоги',
         empty: 'Активных диалогов нет.',
-        countSql: "SELECT count(*) FROM tickets WHERE status = 'active' AND operator_vk_id = $1",
+        countSql: "SELECT count(*) FROM tickets WHERE status = 'active' AND operator_vk_id = $1 AND vk_group_id = $2",
         rowsSql: `SELECT t.id, t.question, u.full_name, u.group_number
                     FROM tickets t JOIN users u ON t.student_vk_id = u.vk_id
-                   WHERE t.status = 'active' AND t.operator_vk_id = $1
-                   ORDER BY t.id DESC LIMIT $2 OFFSET $3`,
+                   WHERE t.status = 'active' AND t.operator_vk_id = $1 AND t.vk_group_id = $2
+                   ORDER BY t.id DESC LIMIT $3 OFFSET $4`,
         line: (t) => `🆔 #${t.id} — ${t.full_name || 'без имени'}${t.group_number ? ', ' + t.group_number : ''}\n${preview(t.question, LIST_PREVIEW)}`,
         button: (t) => ({ label: `Перейти к #${t.id}`, payload: { command: 'open_chat', ticket_id: t.id }, color: Keyboard.PRIMARY_COLOR })
     },
     history: {
-        byUser: true,
+        params: (senderId, groupId) => [senderId, groupId],
         role: 'operator',
         title: '📚 Завершённые диалоги',
         hint: 'Из любого можно сделать запись для базы знаний.',
         empty: 'Завершённых диалогов пока нет.',
-        countSql: "SELECT count(*) FROM tickets WHERE status = 'closed' AND operator_vk_id = $1",
+        countSql: "SELECT count(*) FROM tickets WHERE status = 'closed' AND operator_vk_id = $1 AND vk_group_id = $2",
         rowsSql: `SELECT t.id, t.question, u.full_name
                     FROM tickets t JOIN users u ON t.student_vk_id = u.vk_id
-                   WHERE t.status = 'closed' AND t.operator_vk_id = $1
-                   ORDER BY t.id DESC LIMIT $2 OFFSET $3`,
+                   WHERE t.status = 'closed' AND t.operator_vk_id = $1 AND t.vk_group_id = $2
+                   ORDER BY t.id DESC LIMIT $3 OFFSET $4`,
         line: (t) => `🆔 #${t.id} — ${t.full_name || 'без имени'}\n${preview(t.question, LIST_PREVIEW)}`,
         button: (t) => ({ label: `📚 В базу #${t.id}`, payload: { command: 'faq_draft', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR })
     },
     my: {
-        byUser: true,
+        params: (senderId, groupId) => [senderId, groupId],
         role: 'student',
         title: '🗂 Ваши обращения',
         empty: 'Вы ещё не обращались к администраторам.',
-        countSql: 'SELECT count(*) FROM tickets WHERE student_vk_id = $1',
+        countSql: 'SELECT count(*) FROM tickets WHERE student_vk_id = $1 AND vk_group_id = $2',
         rowsSql: `SELECT id, question, status FROM tickets
-                   WHERE student_vk_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+                   WHERE student_vk_id = $1 AND vk_group_id = $2 ORDER BY created_at DESC LIMIT $3 OFFSET $4`,
         line: (t) => `#${t.id} — ${ticketMark(t.status)}\n❓ ${preview(t.question, LIST_PREVIEW)}`,
         button: (t) => (t.status === 'active'
             ? { label: `Перейти к #${t.id}`, payload: { command: 'open_chat', ticket_id: t.id }, color: Keyboard.POSITIVE_COLOR }
@@ -166,11 +187,11 @@ const TICKET_LISTS = {
 };
 
 /** Показывает одну страницу списка обращений */
-async function sendTicketList(context, senderId, listId, page = 0) {
+async function sendTicketList(context, senderId, listId, page = 0, groupId = null) {
     const cfg = TICKET_LISTS[listId];
     if (!cfg) return;
 
-    const params = cfg.byUser ? [senderId] : [];
+    const params = cfg.params(senderId, groupId);
     const total = Number((await db.query(cfg.countSql, params)).rows[0].count);
     if (total === 0) return context.send(cfg.empty);
 
@@ -522,12 +543,19 @@ async function handleMessage(context, vk, groupId) {
                 // Условие status = 'open' прямо в UPDATE: иначе два администратора,
                 // нажавшие кнопку одновременно, забирали бы вопрос вдвоём
                 const taken = await db.query(
-                    "UPDATE tickets SET operator_vk_id = $1, status = 'active' WHERE id = $2 AND status = 'open' RETURNING *",
-                    [senderId, ticketId]
+                    "UPDATE tickets SET operator_vk_id = $1, status = 'active' WHERE id = $2 AND status = 'open' AND vk_group_id = $3 RETURNING *",
+                    [senderId, ticketId, groupId]
                 );
                 if (taken.rowCount === 0) {
-                    const exists = await db.query('SELECT operator_vk_id FROM tickets WHERE id = $1', [ticketId]);
+                    const exists = await db.query('SELECT operator_vk_id, vk_group_id FROM tickets WHERE id = $1', [ticketId]);
                     if (exists.rows.length === 0) return context.send('Вопрос не найден.');
+                    const row = exists.rows[0];
+                    // Чужое сообщество — отдельный случай: администратор видит вопрос
+                    // из уведомления или по старой кнопке, но отвечать отсюда нельзя
+                    if (row.vk_group_id && String(row.vk_group_id) !== String(groupId)) {
+                        console.info(`[TICKET] #${ticketId}: ${senderId} пытался взять вопрос сообщества ${row.vk_group_id}, находясь в ${groupId}`);
+                        return context.send(`Вопрос #${ticketId} задан в сообществе ${await groupTitle(row.vk_group_id)}. Откройте его там и возьмите оттуда: отвечать студенту можно только из того сообщества, где он спрашивал.`);
+                    }
                     return context.send(`Вопрос #${ticketId} уже взял другой администратор.`);
                 }
                 const ticketRes = taken;
@@ -562,6 +590,10 @@ async function handleMessage(context, vk, groupId) {
                     console.warn(`[SECURITY] Отказ open_chat: ${senderId} не участник тикета ${ticketId} — возможна подделка кнопки`);
                     return context.send('Тикет не найден или недоступен.');
                 }
+                if (ticket.vk_group_id && String(ticket.vk_group_id) !== String(groupId)) {
+                    console.info(`[TICKET] #${ticketId}: попытка открыть чат из сообщества ${groupId}, а обращение в ${ticket.vk_group_id}`);
+                    return context.send(`Этот диалог ведётся в сообществе ${await groupTitle(ticket.vk_group_id)} — откройте его там.`);
+                }
                 await db.query("UPDATE users SET current_chat_ticket_id = $1, state = 'chat_mode' WHERE vk_id = $2", [ticketId, senderId]);
                 console.info(`[TICKET] ${senderId} открыл чат тикета #${ticketId}`);
                 const userRes = await db.query('SELECT role FROM users WHERE vk_id = $1', [senderId]);
@@ -580,8 +612,8 @@ async function handleMessage(context, vk, groupId) {
                 if (!ticketId) return context.send('Некорректный номер тикета.');
                 // Управлять заявкой может только её автор и только пока её не взяли в работу
                 const own = await db.query(
-                    "SELECT id FROM tickets WHERE id = $1 AND student_vk_id = $2 AND status = 'open'",
-                    [ticketId, senderId]
+                    "SELECT id FROM tickets WHERE id = $1 AND student_vk_id = $2 AND status = 'open' AND vk_group_id = $3",
+                    [ticketId, senderId, groupId]
                 );
                 if (own.rows.length === 0) {
                     console.warn(`[SECURITY] Отказ manage_ticket: ${senderId} не автор тикета ${ticketId} (или тикет уже в работе)`);
@@ -600,7 +632,7 @@ async function handleMessage(context, vk, groupId) {
                     return context.send('Этот список вам недоступен.');
                 }
                 const page = Number.parseInt(messagePayload.page, 10);
-                return sendTicketList(context, senderId, messagePayload.list, Number.isInteger(page) ? page : 0);
+                return sendTicketList(context, senderId, messagePayload.list, Number.isInteger(page) ? page : 0, groupId);
             }
             if (['faq_draft', 'faq_save', 'faq_retry', 'faq_cancel'].includes(messagePayload.command)) {
                 if (await getRole(senderId) !== 'operator') {
@@ -677,8 +709,8 @@ async function handleMessage(context, vk, groupId) {
                 // Вложения храним в самом обращении: их должен видеть любой
                 // администратор, который возьмёт вопрос, а не только получивший уведомление
                 const newT = await db.query(
-                    'INSERT INTO tickets (student_vk_id, question, attachments) VALUES ($1, $2, $3) RETURNING id',
-                    [senderId, qText, pendingAtts.length ? pendingAtts : null]
+                    'INSERT INTO tickets (student_vk_id, vk_group_id, question, attachments) VALUES ($1, $2, $3, $4) RETURNING id',
+                    [senderId, groupId, qText, pendingAtts.length ? pendingAtts : null]
                 );
                 const ticketId = newT.rows[0].id;
                 console.info(`[TICKET] Создан тикет #${ticketId} от ${senderId} (${messagePayload.command === 'operator_request' ? 'из диалога с ИИ' : 'из поиска'}): «${preview(qText, 120)}»${pendingAtts.length ? `, фото: ${pendingAtts.length}` : ''}`);
@@ -766,6 +798,21 @@ async function processState(context, user, vk, groupId) {
         case 'chat_mode':
             if (!user.current_chat_ticket_id) { await db.query("UPDATE users SET state = 'main_menu' WHERE vk_id = $1", [senderId]); return context.send('Ошибка. В меню.'); }
             if (text === '⬅️ Назад к списку' || text === '⬅️ В меню') { await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [senderId]); return mainMenu(context, user); }
+            {
+                // Человек может вести диалог по обращению одного курса, а написать
+                // в сообщество другого: состояние чата у него общее на все
+                // сообщества. Сообщение отсюда не дошло бы до собеседника, и об
+                // этом никто бы не узнал — поэтому останавливаем и подсказываем,
+                // куда идти. Выход в меню выше остаётся доступным откуда угодно.
+                const where = (await db.query('SELECT vk_group_id FROM tickets WHERE id = $1', [user.current_chat_ticket_id])).rows[0];
+                if (where && where.vk_group_id && String(where.vk_group_id) !== String(groupId)) {
+                    console.info(`[TICKET] #${user.current_chat_ticket_id}: сообщение от ${senderId} из сообщества ${groupId}, диалог ведётся в ${where.vk_group_id}`);
+                    return context.send({
+                        message: `Диалог по обращению #${user.current_chat_ticket_id} идёт в сообществе ${await groupTitle(where.vk_group_id)}. Напишите там — отсюда сообщение не дойдёт.`,
+                        keyboard: Keyboard.builder().textButton({ label: '⬅️ В меню', color: Keyboard.SECONDARY_COLOR })
+                    });
+                }
+            }
             if (text === '🏁 Завершить этот тикет' || text === '🏁 Завершить вопрос') {
                 await db.query("UPDATE tickets SET status = 'closed' WHERE id = $1", [user.current_chat_ticket_id]);
                 const t = (await db.query('SELECT * FROM tickets WHERE id = $1', [user.current_chat_ticket_id])).rows[0];
@@ -951,15 +998,15 @@ async function processState(context, user, vk, groupId) {
         case 'main_menu':
             if (user.role === 'operator') {
                 if (text === '📥 Очередь вопросов') {
-                    await sendTicketList(context, senderId, 'queue');
+                    await sendTicketList(context, senderId, 'queue', 0, groupId);
                     await mainMenu(context, user);
                 } else if (text === '💬 Мои диалоги') {
-                    await sendTicketList(context, senderId, 'dialogs');
+                    await sendTicketList(context, senderId, 'dialogs', 0, groupId);
                     await mainMenu(context, user);
                 } else if (text === '📚 История диалогов') {
                     // Завершённые обращения: из любого можно сделать запись базы
                     // знаний, даже если в момент завершения предложение пропустили
-                    await sendTicketList(context, senderId, 'history');
+                    await sendTicketList(context, senderId, 'history', 0, groupId);
                     await mainMenu(context, user);
                 } else if (text === '👤 Профиль') {
                     await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]);
@@ -971,7 +1018,7 @@ async function processState(context, user, vk, groupId) {
             } else {
                 if (text === '✉️ Задать вопрос') { await db.query("UPDATE users SET state = 'ask_question_mode', ai_context = '[]' WHERE vk_id = $1", [senderId]); await context.send({ message: 'Напишите вопрос:', keyboard: Keyboard.builder().textButton({ label: '🏠 В меню', color: Keyboard.SECONDARY_COLOR }).oneTime() }); }
                 else if (text === '🗂 Мои обращения') {
-                    await sendTicketList(context, senderId, 'my');
+                    await sendTicketList(context, senderId, 'my', 0, groupId);
                     await mainMenu(context, user);
                 } else if (text === '👤 Профиль') {
                     await db.query("UPDATE users SET state = 'profile_view' WHERE vk_id = $1", [senderId]);

@@ -1883,6 +1883,101 @@ describe('bot — текст вопроса доходит до админист
     });
 });
 
+describe('bot — обращения не выходят за пределы своего сообщества', () => {
+    // Регрессия: очередь была общей на все курсы. Администратор, состоящий в
+    // нескольких сообществах, мог взять чужой вопрос — и его ответы уходили бы
+    // от имени не того сообщества. ВКонтакте такие сообщения отклоняет (студент
+    // этому сообществу не писал), а администратор об этом не узнавал.
+    const { handleMessage } = require('../bot')._test;
+    const ADMIN = 99999961;
+    const STUDENT = 99999962;
+    const MINE = 999000031;      // сообщество, в котором сидит администратор
+    const OTHER = 999000032;     // сообщество другого курса
+
+    const sent = [];        // что бот ответил в текущий диалог
+    const delivered = [];   // что ушло через API другому человеку
+    const vk = { api: { messages: { send: async (params) => { delivered.push(params); return 1; } } } };
+    const ctx = (senderId, over = {}) => ({
+        senderId, text: null, attachments: [], messagePayload: null,
+        send: async (m) => { sent.push(m); return 1; }, ...over
+    });
+    const said = () => sent.map(m => (m && m.message) || String(m)).join(' | ');
+
+    let foreignId;
+
+    before(async () => {
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[ADMIN, STUDENT]]);
+        await db.query(`INSERT INTO users (vk_id, role, full_name, group_number, state) VALUES
+            ($1, 'operator', 'Алёна', NULL, 'main_menu'),
+            ($2, 'student', 'Кузнецова Мария', 'РИ-240944', 'main_menu')`, [ADMIN, STUDENT]);
+        await db.query('DELETE FROM vk_groups WHERE group_id = ANY($1)', [[MINE, OTHER]]);
+        await db.query(`INSERT INTO vk_groups (group_id, group_name, access_token) VALUES
+            ($1, 'Первый курс ИОТ', 'test'), ($2, 'Третий курс ИОТ', 'test')`, [MINE, OTHER]);
+        const r = await db.query(
+            "INSERT INTO tickets (student_vk_id, vk_group_id, question, status) VALUES ($1, $2, 'Когда стипендия?', 'open') RETURNING id",
+            [STUDENT, OTHER]
+        );
+        foreignId = r.rows[0].id;
+    });
+    after(async () => {
+        await db.query('DELETE FROM tickets WHERE student_vk_id = $1', [STUDENT]);
+        await db.query('DELETE FROM users WHERE vk_id = ANY($1)', [[ADMIN, STUDENT]]);
+        await db.query('DELETE FROM vk_groups WHERE group_id = ANY($1)', [[MINE, OTHER]]);
+    });
+    beforeEach(() => { sent.length = 0; delivered.length = 0; });
+
+    it('Вопрос другого курса не показывается в очереди', async () => {
+        await handleMessage(ctx(ADMIN, { text: '📥 Очередь вопросов' }), vk, MINE);
+        assert.ok(said().includes('Очередь пуста'), said());
+    });
+
+    it('В своём сообществе вопрос виден', async () => {
+        await handleMessage(ctx(ADMIN, { text: '📥 Очередь вопросов' }), vk, OTHER);
+        assert.ok(said().includes('Когда стипендия?'), said());
+    });
+
+    it('Взять вопрос другого курса нельзя, бот называет нужное сообщество', async () => {
+        await handleMessage(ctx(ADMIN, { messagePayload: { command: 'take_ticket', ticket_id: foreignId } }), vk, MINE);
+        assert.ok(said().includes('Третий курс ИОТ'), said());
+
+        const t = (await db.query('SELECT status, operator_vk_id FROM tickets WHERE id = $1', [foreignId])).rows[0];
+        assert.equal(t.status, 'open', 'обращение должно остаться в очереди своего курса');
+        assert.equal(t.operator_vk_id, null, 'администратор не должен быть назначен');
+    });
+
+    it('Сообщение из чужого сообщества не уходит собеседнику', async () => {
+        const r = await db.query(
+            "INSERT INTO tickets (student_vk_id, vk_group_id, operator_vk_id, question, status) VALUES ($1, $2, $3, 'Вопрос', 'active') RETURNING id",
+            [STUDENT, OTHER, ADMIN]
+        );
+        await db.query("UPDATE users SET state = 'chat_mode', current_chat_ticket_id = $1 WHERE vk_id = $2", [r.rows[0].id, ADMIN]);
+
+        await handleMessage(ctx(ADMIN, { text: 'Стипендия будет 25 числа' }), vk, MINE);
+
+        assert.equal(delivered.length, 0, 'ничего не должно уйти через чужое сообщество');
+        assert.ok(said().includes('Третий курс ИОТ'), said());
+
+        const saved = await db.query('SELECT count(*) FROM messages WHERE ticket_id = $1', [r.rows[0].id]);
+        assert.equal(Number(saved.rows[0].count), 0, 'сообщение не должно попасть и в переписку');
+
+        await db.query("UPDATE users SET state = 'main_menu', current_chat_ticket_id = NULL WHERE vk_id = $1", [ADMIN]);
+    });
+
+    it('Выйти в меню можно из любого сообщества', async () => {
+        const r = await db.query(
+            "INSERT INTO tickets (student_vk_id, vk_group_id, operator_vk_id, question, status) VALUES ($1, $2, $3, 'Вопрос', 'active') RETURNING id",
+            [STUDENT, OTHER, ADMIN]
+        );
+        await db.query("UPDATE users SET state = 'chat_mode', current_chat_ticket_id = $1 WHERE vk_id = $2", [r.rows[0].id, ADMIN]);
+
+        await handleMessage(ctx(ADMIN, { text: '⬅️ Назад к списку' }), vk, MINE);
+
+        const u = (await db.query('SELECT state, current_chat_ticket_id FROM users WHERE vk_id = $1', [ADMIN])).rows[0];
+        assert.equal(u.state, 'main_menu');
+        assert.equal(u.current_chat_ticket_id, null);
+    });
+});
+
 describe('bot — списки обращений умещаются в сообщение ВКонтакте', () => {
     const { handleMessage, sendTicketList, LIST_PAGE_SIZE, LIST_PREVIEW } = require('../bot')._test;
     const ADMIN = 99999951;
@@ -1913,8 +2008,8 @@ describe('bot — списки обращений умещаются в сооб
             ($2, 'student', 'Кузнецова Мария', 'РИ-240944', 'main_menu')`, [ADMIN, STUDENT]);
         for (let i = 0; i < 9; i++) {
             await db.query(
-                "INSERT INTO tickets (student_vk_id, question, status) VALUES ($1, $2, 'open')",
-                [STUDENT, `${HUGE} (вопрос ${i + 1})`]
+                "INSERT INTO tickets (student_vk_id, vk_group_id, question, status) VALUES ($1, $2, $3, 'open')",
+                [STUDENT, GROUP, `${HUGE} (вопрос ${i + 1})`]
             );
         }
         assert.ok(HUGE.length > 2500, 'вопрос должен быть заведомо длинным');
@@ -1991,7 +2086,7 @@ describe('bot — списки обращений умещаются в сооб
     it('Пустой список сообщает об этом без клавиатуры', async () => {
         await db.query("UPDATE tickets SET status = 'closed' WHERE student_vk_id = $1", [STUDENT]);
         sent.length = 0;
-        await sendTicketList(ctx(ADMIN), ADMIN, 'queue');
+        await sendTicketList(ctx(ADMIN), ADMIN, 'queue', 0, GROUP);
         assert.ok(String(sent[0]).includes('Очередь пуста'), String(sent[0]));
         await db.query("UPDATE tickets SET status = 'open' WHERE student_vk_id = $1", [STUDENT]);
     });

@@ -47,6 +47,32 @@ const c = new Client({
     // а не только тот, кому пришло уведомление
     await c.query('ALTER TABLE tickets ADD COLUMN IF NOT EXISTS attachments TEXT[]');
 
+    // Сообщество обращения. До него очередь была общей на все курсы, и
+    // администратор мог взять чужой вопрос из другого диалога: ответы уходили
+    // от имени не того сообщества, ВКонтакте их отклонял, а администратор об
+    // этом не узнавал. Старым обращениям проставляем сообщество студента.
+    const hadGroup = await c.query(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = 'tickets' AND column_name = 'vk_group_id'"
+    );
+    await c.query('ALTER TABLE tickets ADD COLUMN IF NOT EXISTS vk_group_id BIGINT');
+    if (hadGroup.rowCount === 0) {
+        const filled = await c.query(`
+            UPDATE tickets t
+               SET vk_group_id = u.vk_group_id
+              FROM users u
+             WHERE u.vk_id = t.student_vk_id
+               AND t.vk_group_id IS NULL
+               AND u.vk_group_id IS NOT NULL
+        `);
+        console.log(`Обращениям проставлено сообщество: ${filled.rowCount}.`);
+        const orphan = await c.query('SELECT count(*) FROM tickets WHERE vk_group_id IS NULL');
+        if (Number(orphan.rows[0].count) > 0) {
+            console.log(`Без сообщества осталось: ${orphan.rows[0].count} — у их авторов не записано сообщество.`);
+            console.log('Такие обращения не попадут в очередь ни одного курса. Проверьте их в админке.');
+        }
+    }
+    await c.query('CREATE INDEX IF NOT EXISTS idx_tickets_group_status ON tickets(vk_group_id, status)');
+
     // Черновик записи базы знаний: администратор подтверждает его в боте
     await c.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS faq_draft JSONB');
 

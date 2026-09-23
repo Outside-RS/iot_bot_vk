@@ -192,6 +192,11 @@ async function runMigration() {
             CREATE TABLE tickets (
                 id SERIAL PRIMARY KEY,
                 student_vk_id BIGINT NOT NULL,
+                -- сообщество, в котором задан вопрос. Вся переписка по обращению
+                -- идёт через токен этого сообщества, поэтому и очередь, и диалоги
+                -- администратора ограничены им: из чужого сообщества ответ просто
+                -- не дошёл бы до студента
+                vk_group_id BIGINT,
                 operator_vk_id BIGINT,
                 question TEXT NOT NULL,
                 status TEXT DEFAULT 'open',
@@ -200,6 +205,7 @@ async function runMigration() {
                 attachments TEXT[],
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE INDEX idx_tickets_group_status ON tickets(vk_group_id, status);
             CREATE INDEX tickets_status_idx ON tickets (status);
 
             CREATE TABLE messages (
