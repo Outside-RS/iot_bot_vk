@@ -312,10 +312,32 @@ router.get('/api/ai-status', requireAuth, async (req, res) => {
     }
 });
 
+// Authorization Key у GigaChat — это base64 от «client_id:client_secret»,
+// оба поля UUID, вместе около сотни символов. Проверяем форму перед сохранением:
+// браузеры любят подставлять в поля с type=password что попало, а записанный
+// по ошибке мусор молча ломает выдачу токена, и разбираться приходится по логам.
+function looksLikeGigachatKey(raw) {
+    const key = String(raw).trim();
+    if (!/^[A-Za-z0-9+/=]{40,}$/.test(key)) return false;
+    try {
+        return Buffer.from(key, 'base64').toString('utf8').includes(':');
+    } catch (e) {
+        return false;
+    }
+}
+
 // === API: Сохранение настроек ИИ ===
 router.post('/ai-settings', requireAuth, async (req, res) => {
     try {
-        const { ollama_url, ollama_model, gigachat_key, gigachat_scope, gigachat_model } = req.body;
+        const { ollama_url, ollama_model, gigachat_scope, gigachat_model } = req.body;
+        const gigachat_key = (req.body.gigachat_key || '').trim();
+
+        if (gigachat_key && !looksLikeGigachatKey(gigachat_key)) {
+            console.warn('[Admin] Отклонено сохранение настроек: значение в поле ключа GigaChat не похоже на Authorization Key');
+            return res.status(400).json({
+                error: 'Это не похоже на Authorization Key GigaChat. Оставьте поле пустым, чтобы сохранить текущий ключ.'
+            });
+        }
 
         // Получаем текущий ключ чтобы понять, изменился ли он
         const current = await db.query('SELECT gigachat_key FROM app_settings WHERE id = TRUE');

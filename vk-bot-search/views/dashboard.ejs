@@ -95,7 +95,11 @@
                 </div>
                 <div class="form-group">
                     <label>Authorization Key</label>
-                    <input type="password" id="gigachatKey" placeholder="Вставьте Authorization Key">
+                    <!-- autocomplete="new-password": без него браузер, помнящий пароль от
+                         панели, подставляет его в это поле, и сохранение настроек
+                         затирает им настоящий ключ GigaChat -->
+                    <input type="password" id="gigachatKey" autocomplete="new-password"
+                           placeholder="Вставьте Authorization Key">
                 </div>
                 <div class="form-row">
                     <div class="form-group">
