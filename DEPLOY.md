@@ -596,6 +596,10 @@ docker compose exec -T db psql -U postgres -c "DROP DATABASE restore_check"
 | Ключ отправки копий | том Docker `backup_keys` |
 | Данные базы | том Docker `postgres_data` |
 
+Имена томов начинаются с имени проекта — оно задано строкой `name: vk-bot-search`
+в начале `docker-compose.yml`. Поэтому база находится независимо от того, куда
+перенесли папку; подробнее — в разделе про клон репозитория выше.
+
 Тома Docker переживают пересборку контейнеров, но удаляются командой `docker compose down -v`.
 На рабочем компьютере эту команду выполнять нельзя: она сотрёт базу, сертификат и ключ.
 
@@ -611,7 +615,10 @@ docker compose exec -T db psql -U postgres -c "DROP DATABASE restore_check"
 | Сделать копию базы прямо сейчас | `docker compose run --rm backup now` |
 | Дополнить базу знаний из файла | `docker compose exec bot node update_faq.js` |
 | Заменить базу знаний целиком | `docker compose exec bot node update_faq.js --replace --yes` |
+| Проверить туннель | `docker compose logs frpc --tail 20` |
 | Поднять упавший туннель | `docker compose restart frpc` |
+| Напомнить о незавершённой регистрации | `docker compose exec bot node remind_registration.js` |
+| Выгнать всех из админки | `docker compose exec db psql -U postgres -c "DELETE FROM session"` |
 | Перезапустить всё | `docker compose restart` |
 | Остановить | `docker compose stop` |
 

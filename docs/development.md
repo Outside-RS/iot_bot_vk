@@ -185,6 +185,28 @@ await c.query('ALTER TABLE faq ADD COLUMN IF NOT EXISTS created_at TIMESTAMP');
 await c.query('ALTER TABLE faq ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP');
 ```
 
+Если без значения в новой колонке старые строки перестанут работать, их нужно
+заполнить — но ровно один раз, при первом добавлении. Проверить, была ли
+колонка, можно до `ALTER TABLE`:
+
+```js
+const had = await c.query(
+    "SELECT 1 FROM information_schema.columns WHERE table_name = 'tickets' AND column_name = 'vk_group_id'"
+);
+await c.query('ALTER TABLE tickets ADD COLUMN IF NOT EXISTS vk_group_id BIGINT');
+if (had.rowCount === 0) {
+    const filled = await c.query(`UPDATE tickets t SET vk_group_id = u.vk_group_id
+                                    FROM users u
+                                   WHERE u.vk_id = t.student_vk_id AND t.vk_group_id IS NULL`);
+    console.log(`Обращениям проставлено сообщество: ${filled.rowCount}.`);
+}
+```
+
+Так реально сделано для сообщества обращения: без него старые обращения не
+попали бы ни в одну очередь. Печатать, скольким строкам проставили, стоит
+всегда — при обновлении рабочей базы это единственный способ понять, что
+миграция сделала то, что задумано.
+
 **Шаг 3.** Проверьте оба пути:
 
 ```bash
