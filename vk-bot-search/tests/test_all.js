@@ -1883,6 +1883,111 @@ describe('bot — текст вопроса доходит до админист
     });
 });
 
+describe('bot — из диалога всегда есть выход', () => {
+    // Регрессия: на вопрос «Кто вы?» человек написал своё имя, и бот не ответил
+    // ничего. Кнопки пропали, любое следующее сообщение тоже оставалось без
+    // ответа, и вернуть человека можно было только удалением его из базы.
+    const { handleMessage } = require('../bot')._test;
+    const USER = 99999971;
+    const GROUP = 999000041;
+
+    const sent = [];
+    const vk = { api: { messages: { send: async () => 1 } } };
+    const ctx = (over = {}) => ({
+        senderId: USER, text: null, attachments: [], messagePayload: null,
+        send: async (m) => { sent.push(m); return 1; }, ...over
+    });
+    const said = () => sent.map(m => (m && m.message) || String(m)).join(' | ');
+    const labels = () => [...JSON.stringify(sent.map(m => (m && m.keyboard) || {})).matchAll(/"label":"([^"]+)"/g)].map(x => x[1]);
+    const stateOf = async () => (await db.query('SELECT state, role FROM users WHERE vk_id = $1', [USER])).rows[0];
+
+    const setUser = async (state, role) => {
+        await db.query('DELETE FROM users WHERE vk_id = $1', [USER]);
+        await db.query('INSERT INTO users (vk_id, state, role, full_name, group_number) VALUES ($1, $2, $3, $4, $5)',
+            [USER, state, role, role ? 'Рябцев Андрей' : null, role === 'student' ? 'РИ-240944' : null]);
+    };
+
+    after(async () => { await db.query('DELETE FROM users WHERE vk_id = $1', [USER]); });
+    beforeEach(() => { sent.length = 0; });
+
+    it('Имя вместо кнопки на вопрос «Кто вы?» — бот повторяет вопрос', async () => {
+        await setUser('registration_start', null);
+        await handleMessage(ctx({ text: 'Рябцев Андрей' }), vk, GROUP);
+
+        assert.ok(sent.length > 0, 'бот не должен молчать');
+        assert.ok(said().includes('Кто вы?'), said());
+        assert.ok(labels().includes('Я Студент') && labels().includes('Я Администратор'), labels().join(', '));
+
+        const u = await stateOf();
+        assert.equal(u.state, 'registration_start', 'состояние должно остаться прежним');
+    });
+
+    it('Второе такое же сообщение снова получает ответ', async () => {
+        await setUser('registration_start', null);
+        await handleMessage(ctx({ text: 'Рябцев Андрей' }), vk, GROUP);
+        sent.length = 0;
+        await handleMessage(ctx({ text: 'О' }), vk, GROUP);
+        assert.ok(said().includes('Кто вы?'), said());
+    });
+
+    it('Кнопка «Я Студент» после этого по-прежнему работает', async () => {
+        await setUser('registration_start', null);
+        await handleMessage(ctx({ text: 'что-то не то' }), vk, GROUP);
+        sent.length = 0;
+        await handleMessage(ctx({ text: 'Я Студент' }), vk, GROUP);
+
+        assert.ok(said().includes('ФИО'), said());
+        assert.equal((await stateOf()).state, 'reg_student_fio');
+    });
+
+    it('Произвольный текст в «Что изменить?» — повтор с кнопками', async () => {
+        await setUser('profile_edit_select', 'student');
+        await handleMessage(ctx({ text: 'хочу поменять всё' }), vk, GROUP);
+
+        assert.ok(sent.length > 0, 'бот не должен молчать');
+        assert.ok(labels().includes('ФИО'), labels().join(', '));
+        assert.equal((await stateOf()).state, 'profile_edit_select');
+    });
+
+    it('Произвольный текст в меню заявки — повтор с кнопками', async () => {
+        await setUser('ticket_manage_menu', 'student');
+        await handleMessage(ctx({ text: 'удали пожалуйста' }), vk, GROUP);
+
+        assert.ok(sent.length > 0, 'бот не должен молчать');
+        assert.ok(labels().includes('❌ Удалить заявку'), labels().join(', '));
+    });
+
+    // Регрессия: кнопки этого меню в двух местах были подписаны по-разному —
+    // «✏️» вместо «✏️ Изменить текст», и нажатие ни к чему не приводило
+    it('Кнопки меню заявки подписаны так же, как их разбирает бот', async () => {
+        await setUser('ticket_edit_text', 'student');
+        await handleMessage(ctx({ text: '🔙 Назад' }), vk, GROUP);
+
+        const shown = labels();
+        assert.deepEqual(shown, ['✏️ Изменить текст', '❌ Удалить заявку', '🔙 Назад'], shown.join(', '));
+
+        sent.length = 0;
+        await handleMessage(ctx({ text: shown[0] }), vk, GROUP);
+        assert.ok(said().includes('Новый текст'), said());
+    });
+
+    it('Неизвестное состояние не запирает человека', async () => {
+        await setUser('состояние_из_старой_версии', 'student');
+        await handleMessage(ctx({ text: 'привет' }), vk, GROUP);
+
+        assert.ok(said().includes('меню'), said());
+        assert.equal((await stateOf()).state, 'main_menu');
+    });
+
+    it('Неизвестное состояние без роли возвращает к регистрации', async () => {
+        await setUser('состояние_из_старой_версии', null);
+        await handleMessage(ctx({ text: 'привет' }), vk, GROUP);
+
+        assert.ok(said().includes('Кто вы?'), said());
+        assert.equal((await stateOf()).state, 'registration_start');
+    });
+});
+
 describe('bot — обращения не выходят за пределы своего сообщества', () => {
     // Регрессия: очередь была общей на все курсы. Администратор, состоящий в
     // нескольких сообществах, мог взять чужой вопрос — и его ответы уходили бы
