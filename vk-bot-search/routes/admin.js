@@ -274,7 +274,12 @@ router.get('/api/ai-status', requireAuth, async (req, res) => {
         let usage = [];
         try {
             usage = await readUsage();
-        } catch (e) { /* таблицы нет до запуска migrate_update.js */ }
+        } catch (e) {
+            // Молчать тут нельзя: без этих строк карточка расхода токенов
+            // просто не появится в панели, и догадаться почему невозможно.
+            // Обычно значит, что база не обновлена — лечится migrate_update.js
+            console.warn('[Admin] Не удалось прочитать расход токенов:', e.message);
+        }
 
         // Статус GigaChat
         let gigachatStatus = settings.gigachat_key ? 'configured' : 'no_key';
