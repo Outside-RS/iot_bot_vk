@@ -2095,6 +2095,30 @@ describe('bot — из диалога всегда есть выход', () => {
         assert.equal(String(u.vk_group_id), String(GROUP), 'сообщество должно записаться при первом же сообщении');
     });
 
+    // Регрессия: скрипт напоминаний искал по «роли нет», а в схеме у users
+    // стоит DEFAULT 'student' — роль появляется сразу при заведении, ещё до
+    // ответа на «Кто вы?». Скрипт не находил никого и молча сообщал, что
+    // напоминать некому
+    it('Незавершённая регистрация видна скрипту напоминаний', async () => {
+        const { UNFINISHED, REGISTRATION_STATES } = require('../remind_registration');
+        await db.query('DELETE FROM users WHERE vk_id = $1', [USER]);
+        await handleMessage(ctx({ text: 'привет' }), vk, GROUP);
+
+        const found = await db.query(
+            `SELECT vk_id FROM users WHERE vk_id = $2 AND ${UNFINISHED}`,
+            [REGISTRATION_STATES, USER]
+        );
+        assert.equal(found.rowCount, 1, 'новый человек должен считаться незавершившим регистрацию');
+
+        // А закончивший регистрацию в список попадать не должен
+        await db.query("UPDATE users SET state = 'main_menu', full_name = 'Иванов Иван', group_number = 'РИ-240001' WHERE vk_id = $1", [USER]);
+        const after = await db.query(
+            `SELECT vk_id FROM users WHERE vk_id = $2 AND ${UNFINISHED}`,
+            [REGISTRATION_STATES, USER]
+        );
+        assert.equal(after.rowCount, 0, 'зарегистрированного беспокоить не нужно');
+    });
+
     it('Неизвестное состояние не запирает человека', async () => {
         await setUser('состояние_из_старой_версии', 'student');
         await handleMessage(ctx({ text: 'привет' }), vk, GROUP);

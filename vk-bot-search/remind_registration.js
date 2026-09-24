@@ -26,6 +26,23 @@ const { db } = require('./database');
 
 const SEND = process.argv.includes('--send');
 
+// Состояния, в которых человек ещё не прошёл регистрацию до конца
+const REGISTRATION_STATES = ['registration_start', 'reg_student_fio', 'reg_student_group', 'reg_operator_code'];
+
+// Признак незавершённой регистрации.
+//
+// По роли определять нельзя, хотя так и просится: в схеме у users стоит
+// DEFAULT 'student', и новый человек получает роль студента сразу при первом
+// сообщении — ещё до того, как ответит на вопрос «Кто вы?». Проверка role IS
+// NULL не находила никого, и скрипт молча сообщал, что напоминать некому.
+//
+// Надёжный признак — отсутствие имени: студент вводит ФИО сам, администратору
+// имя подставляется из кода доступа. Плюс те, кто прямо сейчас застрял на
+// одном из шагов регистрации. Администраторов не трогаем: если у кого-то из
+// них нет имени, это вопрос кода доступа, а не регистрации.
+const UNFINISHED = `role IS DISTINCT FROM 'operator'
+      AND (full_name IS NULL OR state = ANY($1::text[]))`;
+
 // Пауза между отправками: ВКонтакте ограничивает частоту обращений к API,
 // а спешить здесь некуда
 const PAUSE_MS = 300;
@@ -47,10 +64,8 @@ async function main() {
     const groups = await db.query('SELECT group_id, group_name, access_token FROM vk_groups WHERE is_active = TRUE');
     const byGroup = new Map(groups.rows.map(g => [String(g.group_id), g]));
 
-    // Признак незавершённой регистрации — отсутствие роли: её получают только
-    // после ответа на вопрос «Кто вы?»
-    const where = ['role IS NULL'];
-    const params = [];
+    const where = [UNFINISHED];
+    const params = [REGISTRATION_STATES];
     if (Number.isInteger(DAYS) && DAYS > 0) {
         params.push(DAYS);
         where.push(`created_at > NOW() - ($${params.length} || ' days')::interval`);
@@ -86,7 +101,9 @@ async function main() {
         }
 
         if (!SEND) {
-            const from = group ? `от «${group.group_name}»` : `перебором из ${candidates.length} сообществ`;
+            const from = group
+                ? `от «${group.group_name}»`
+                : `перебором, сообществ: ${candidates.length}`;
             console.log(`  ${u.vk_id} (${when}) — написали бы ${from}`);
             continue;
         }
@@ -130,9 +147,13 @@ async function main() {
     }
 }
 
-main()
-    .catch(err => {
-        console.error('Ошибка:', err.message);
-        process.exitCode = 1;
-    })
-    .finally(() => db.end());
+if (require.main === module) {
+    main()
+        .catch(err => {
+            console.error('Ошибка:', err.message);
+            process.exitCode = 1;
+        })
+        .finally(() => db.end());
+}
+
+module.exports = { UNFINISHED, REGISTRATION_STATES };
