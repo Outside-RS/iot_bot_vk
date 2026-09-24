@@ -753,7 +753,7 @@ async function handleMessage(context, vk, groupId) {
                 // поймёт, почему бот перестал отвечать
                 if (!localUser) {
                     console.info(`[BOT] ${senderId}: кнопка «Спросить ИИ» от неизвестного пользователя — начинаем регистрацию`);
-                    await db.query('INSERT INTO users (vk_id, state) VALUES ($1, $2) ON CONFLICT (vk_id) DO NOTHING', [senderId, 'registration_start']);
+                    await db.query('INSERT INTO users (vk_id, state, vk_group_id) VALUES ($1, $2, $3) ON CONFLICT (vk_id) DO NOTHING', [senderId, 'registration_start', groupId]);
                     await context.send('Давайте сначала познакомимся.');
                     return askWhoAreYou(context);
                 }

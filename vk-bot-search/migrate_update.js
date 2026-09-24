@@ -79,6 +79,33 @@ const c = new Client({
     // Перевод курса ищет студентов по сообществу
     await c.query('CREATE INDEX IF NOT EXISTS idx_users_vk_group ON users(vk_group_id)');
 
+    // Сообщество пользователя. До сентября 2026 оно записывалось только при
+    // завершении регистрации и при вопросе к ИИ, поэтому у части студентов
+    // осталось пустым. А по нему работает перевод на следующий курс и отметка
+    // выпускников: студент без сообщества не переводится и не выпускается,
+    // причём молча. Восстанавливаем из того, что о человеке точно известно, —
+    // его обращений и задач к ИИ.
+    const restored = await c.query(`
+        WITH known AS (
+            SELECT student_vk_id AS vk_id, vk_group_id, created_at FROM tickets WHERE vk_group_id IS NOT NULL
+            UNION ALL
+            SELECT vk_id, vk_group_id, created_at FROM ai_queue WHERE vk_group_id IS NOT NULL
+        ), latest AS (
+            SELECT DISTINCT ON (vk_id) vk_id, vk_group_id FROM known ORDER BY vk_id, created_at DESC
+        )
+        UPDATE users u SET vk_group_id = l.vk_group_id
+          FROM latest l
+         WHERE u.vk_id = l.vk_id AND u.vk_group_id IS NULL
+    `);
+    if (restored.rowCount > 0) {
+        console.log(`Сообщество восстановлено по обращениям и задачам ИИ: ${restored.rowCount} чел.`);
+    }
+    const noGroup = await c.query("SELECT count(*) FROM users WHERE vk_group_id IS NULL AND role = 'student'");
+    if (Number(noGroup.rows[0].count) > 0) {
+        console.log(`Студентов без сообщества осталось: ${noGroup.rows[0].count}. Они не переводятся на следующий курс автоматически.`);
+        console.log('Сообщество запишется само, как только каждый из них напишет боту.');
+    }
+
     // ── База знаний ────────────────────────────────────────────
     // Дата добавления вопроса — по ней сортируется список в админке.
     // Значение по умолчанию ставим ОТДЕЛЬНОЙ командой: иначе у всех

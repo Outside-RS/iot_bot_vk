@@ -130,7 +130,13 @@ async function recordUsage(modelId, tokens) {
           RETURNING tokens_used, quota, exhausted`,
             [model.class, tokens]
         );
-        if (res.rows.length === 0) return;
+        if (res.rows.length === 0) {
+            // Строки нет — значит класс моделей добавили в ai_models.js, но не
+            // прогнали migrate_update.js. Расход по нему не считается, и квота
+            // кончится незаметно, поэтому говорим об этом вслух
+            console.warn(`[AI] Класс моделей «${model.class}» не заведён в ai_usage — расход не учитывается. Запустите migrate_update.js`);
+            return;
+        }
 
         const { tokens_used, quota, exhausted } = res.rows[0];
         const percent = Math.round((Number(tokens_used) / Number(quota)) * 100);
