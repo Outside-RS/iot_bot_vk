@@ -42,14 +42,15 @@
         <div class="form-group">
             <label>От имени сообщества</label>
             <select name="vk_group_id">
+                <option value="">Каждому — от его сообщества</option>
                 <% if (groups && groups.length > 0) { %>
                     <% groups.forEach(function (g) { %>
-                        <option value="<%= g.group_id %>"><%= g.group_name %></option>
+                        <option value="<%= g.group_id %>">Только от «<%= g.group_name %>»</option>
                     <% }); %>
-                <% } else { %>
-                    <option value="">Нет подключённых сообществ</option>
                 <% } %>
             </select>
+            <small>Сообщество может писать только тем, кто писал ему сам. Если выбрать
+            одно, сообщение дойдёт лишь до его студентов — остальные его не получат.</small>
         </div>
 
         <div class="form-group">

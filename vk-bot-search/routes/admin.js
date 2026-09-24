@@ -690,12 +690,15 @@ router.get('/broadcast', requireAuth, noCache, async (req, res) => {
 router.post('/broadcast/send', requireAuth, async (req, res) => {
     const { message, target, group_number, vk_group_id } = req.body;
 
-    // Получаем бота для отправки
-    const botGroupId = vk_group_id || Object.keys(global.bots)[0];
-    const bot = global.bots[botGroupId];
+    // Пустое значение — «каждому от его сообщества». Иначе всё уходит от одного
+    // выбранного: так тоже можно, но дойдёт только до тех, кто ему писал.
+    const forcedGroupId = (vk_group_id || '').trim();
 
-    if (!bot) {
+    if (Object.keys(global.bots || {}).length === 0) {
         return res.send('<h1>❌ Нет активных ботов!</h1><a href="/groups">Добавить группу</a>');
+    }
+    if (forcedGroupId && !global.bots[forcedGroupId]) {
+        return res.send('<h1>❌ Выбранное сообщество сейчас не подключено</h1><a href="/groups">Группы VK</a>');
     }
 
     (async () => {
@@ -703,14 +706,16 @@ router.post('/broadcast/send', requireAuth, async (req, res) => {
             let query = '';
             let params = [];
 
+            // vk_group_id нужен, чтобы писать каждому от того сообщества,
+            // которому он писал сам: другому ВКонтакте писать не даст
             if (target === 'all') {
-                query = 'SELECT vk_id FROM users';
+                query = 'SELECT vk_id, vk_group_id FROM users';
             } else if (target === 'students') {
-                query = "SELECT vk_id FROM users WHERE role = 'student'";
+                query = "SELECT vk_id, vk_group_id FROM users WHERE role = 'student'";
             } else if (target === 'tutors') {
-                query = "SELECT vk_id FROM users WHERE role = 'operator'";
+                query = "SELECT vk_id, vk_group_id FROM users WHERE role = 'operator'";
             } else if (target === 'group' && group_number && group_number.trim()) {
-                query = "SELECT vk_id FROM users WHERE group_number = $1";
+                query = "SELECT vk_id, vk_group_id FROM users WHERE group_number = $1";
                 params = [group_number.trim().toUpperCase()];
             } else {
                 // Раньше неизвестная цель или пустой номер группы давали пустой
@@ -720,13 +725,24 @@ router.post('/broadcast/send', requireAuth, async (req, res) => {
             }
 
             const users = await db.query(query, params);
-            console.info(`[ADMIN] Рассылка запущена через группу ${botGroupId}: цель «${target}${params.length ? ' ' + params[0] : ''}», получателей ${users.rows.length}`);
+            const how = forcedGroupId ? `от сообщества ${forcedGroupId}` : 'каждому от его сообщества';
+            console.info(`[ADMIN] Рассылка запущена ${how}: цель «${target}${params.length ? ' ' + params[0] : ''}», получателей ${users.rows.length}`);
 
             // Раньше ошибки отправки глотались пустым catch — считаем и
             // показываем причины, чтобы было понятно, почему не всем дошло
             let delivered = 0;
             const failures = {};
             for (const user of users.rows) {
+                // Сообщество получателя, если не выбрано одно на всех
+                const senderId = forcedGroupId || (user.vk_group_id != null ? String(user.vk_group_id) : null);
+                const bot = senderId && global.bots[senderId];
+                if (!bot) {
+                    // Человек не писал боту с сентября 2026 либо его сообщество
+                    // сейчас отключено — отправить ему нечем
+                    const reason = senderId ? 'сообщество отключено' : 'сообщество неизвестно';
+                    failures[reason] = (failures[reason] || 0) + 1;
+                    continue;
+                }
                 try {
                     await bot.api.messages.send({
                         peer_id: user.vk_id,

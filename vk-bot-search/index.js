@@ -182,9 +182,40 @@ async function startBots() {
         }
 
         console.info(`[BOT] Всего запущено ботов: ${Object.keys(global.bots).length}`);
+        startPollingWatchdog();
     } catch (e) {
         console.error('[BOT] Не удалось загрузить список групп из базы:', e);
     }
+}
+
+// Присмотр за подключениями к сообществам.
+//
+// Подключение к ВКонтакте может оборваться и не подняться: сеть пропала
+// надолго, токен отозвали, сообщество заблокировали. Процесс бота при этом жив
+// и здоров, админка работает, копии делаются — а студенты одного курса просто
+// перестают получать ответы, и заметить это можно только по жалобам.
+//
+// Раз в пять минут проверяем каждое подключение и поднимаем упавшие.
+let pollingWatchdog = null;
+const POLLING_CHECK_MS = 5 * 60 * 1000;
+
+function startPollingWatchdog() {
+    if (pollingWatchdog) return;
+    pollingWatchdog = setInterval(async () => {
+        for (const [groupId, bot] of Object.entries(global.bots || {})) {
+            if (bot.updates.isStarted) continue;
+            console.warn(`[BOT] Подключение к сообществу ${groupId} не активно — поднимаем заново`);
+            try {
+                await bot.updates.start();
+                console.info(`[BOT] Подключение к сообществу ${groupId} восстановлено`);
+            } catch (err) {
+                // Токен отозван или сообщество заблокировано — сами не починим,
+                // но в журнале это теперь видно, а не тишина
+                console.error(`[BOT] Не удалось восстановить подключение к ${groupId}:`, err.message);
+            }
+        }
+    }, POLLING_CHECK_MS);
+    pollingWatchdog.unref();
 }
 
 // 9. Главная функция запуска
@@ -265,7 +296,9 @@ async function shutdown(reason, exitCode = 0) {
         httpServer.closeIdleConnections(); // страница логов держит соединение открытым
     }));
 
-    // 2. Боты отключаются от VK — новые сообщения больше не приходят
+    // 2. Боты отключаются от VK — новые сообщения больше не приходят.
+    // Сторож гасим первым, иначе он поднимет их обратно
+    if (pollingWatchdog) { clearInterval(pollingWatchdog); pollingWatchdog = null; }
     await step('боты VK', () => Promise.allSettled(Object.values(global.bots || {}).map(bot => bot.updates.stop())));
 
     // 3. Очередь ИИ: ждём задачи в работе, недоделанные возвращаем в очередь
