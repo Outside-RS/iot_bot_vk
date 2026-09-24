@@ -1311,13 +1311,15 @@ describe('bot — сверка курса студента при сообщен
     // Регрессия: студентов не перевели летом 2026 (cron не был подключён)
     it('Устаревший номер группы исправляется по сообществу, студенту приходит пояснение', async () => {
         sent.length = 0;
-        const user = await makeStudent('РИ-140944', null);
+        // Сообщество к моменту сверки уже записано: этим занимается handleMessage
+        // при первом же сообщении, см. «Сообщество запоминается и у тех, кто ещё
+        // не выбрал роль»
+        const user = await makeStudent('РИ-140944', G2);
         const updated = await reconcileStudentCourse(ctx, user, G2);
 
         assert.equal(updated.group_number, 'РИ-240944');
-        const row = (await db.query('SELECT group_number, vk_group_id FROM users WHERE vk_id = $1', [STUDENT])).rows[0];
+        const row = (await db.query('SELECT group_number FROM users WHERE vk_id = $1', [STUDENT])).rows[0];
         assert.equal(row.group_number, 'РИ-240944');
-        assert.equal(String(row.vk_group_id), String(G2), 'сообщество должно запомниться');
         assert.equal(sent.length, 1);
         assert.ok(String(sent[0]).includes('РИ-140944 → РИ-240944'));
     });
@@ -1969,6 +1971,28 @@ describe('bot — из диалога всегда есть выход', () => {
         sent.length = 0;
         await handleMessage(ctx({ text: shown[0] }), vk, GROUP);
         assert.ok(said().includes('Новый текст'), said());
+    });
+
+    // Регрессия: сообщество записывалось только после полной регистрации.
+    // У тех, кто до конца не дошёл, оно оставалось пустым — и напомнить им о
+    // себе было не от кого: бот не знал, от имени какого сообщества писать
+    it('Новому пользователю сообщество записывается сразу', async () => {
+        await db.query('DELETE FROM users WHERE vk_id = $1', [USER]);
+        await handleMessage(ctx({ text: 'привет' }), vk, GROUP);
+
+        const u = (await db.query('SELECT vk_group_id, state FROM users WHERE vk_id = $1', [USER])).rows[0];
+        assert.equal(String(u.vk_group_id), String(GROUP));
+        assert.equal(u.state, 'registration_start');
+    });
+
+    it('Сообщество запоминается и у тех, кто ещё не выбрал роль', async () => {
+        await setUser('registration_start', null);
+        assert.equal((await db.query('SELECT vk_group_id FROM users WHERE vk_id = $1', [USER])).rows[0].vk_group_id, null);
+
+        await handleMessage(ctx({ text: 'Рябцев Андрей' }), vk, GROUP);
+
+        const u = (await db.query('SELECT vk_group_id FROM users WHERE vk_id = $1', [USER])).rows[0];
+        assert.equal(String(u.vk_group_id), String(GROUP), 'сообщество должно записаться при первом же сообщении');
     });
 
     it('Неизвестное состояние не запирает человека', async () => {

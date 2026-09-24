@@ -382,10 +382,8 @@ async function checkGroupAgainstCommunity(groupNumber, groupId) {
 /**
  * Приводит данные студента в соответствие с его сообществом.
  *
- * 1. Запоминает сообщество, если оно ещё не известно. Раньше vk_group_id
- *    записывался только при вопросе к ИИ — большинство студентов были «ничьи».
- * 2. Если сообщество ушло в архив — отмечает выпуск.
- * 3. Если цифра курса в номере группы не совпадает с курсом сообщества —
+ * 1. Если сообщество ушло в архив — отмечает выпуск.
+ * 2. Если цифра курса в номере группы не совпадает с курсом сообщества —
  *    исправляет её и сообщает студенту. Так догоняются записи, которые
  *    не перевели при переименовании (например, cron 1 августа 2026 не был подключён).
  *
@@ -396,11 +394,7 @@ async function reconcileStudentCourse(context, user, groupId) {
     if (user.role !== 'student' || user.is_graduated || !user.group_number) return user;
     if (/^(reg|registration|edit_)/.test(user.state || '')) return user;
 
-    if (!user.vk_group_id) {
-        await db.query('UPDATE users SET vk_group_id = $1 WHERE vk_id = $2 AND vk_group_id IS NULL', [groupId, user.vk_id]);
-        console.info(`[COURSE] ${user.vk_id}: запомнено сообщество ${groupId}`);
-        user = { ...user, vk_group_id: groupId };
-    }
+    // Сообщество к этому моменту уже записано в handleMessage
     if (String(user.vk_group_id) !== String(groupId)) return user;
 
     const community = await getCommunity(groupId);
@@ -782,11 +776,22 @@ async function handleMessage(context, vk, groupId) {
         let userRes = await db.query('SELECT * FROM users WHERE vk_id = $1', [senderId]);
         let user = userRes.rows[0];
         if (!user) {
-            await db.query('INSERT INTO users (vk_id, state) VALUES ($1, $2)', [senderId, 'registration_start']);
+            await db.query('INSERT INTO users (vk_id, state, vk_group_id) VALUES ($1, $2, $3)', [senderId, 'registration_start', groupId]);
             console.info(`[BOT] Новый пользователь ${senderId} (группа ${groupId}) — начата регистрация`);
             await context.send('Добро пожаловать!');
             await askWhoAreYou(context);
             return;
+        }
+
+        // 2.4. Сообщество, из которого человек пишет. Запоминаем при первом же
+        // сообщении, независимо от роли и от того, дошёл ли он до конца
+        // регистрации. Раньше это делалось только для зарегистрированных
+        // студентов: у всех, кто бросил регистрацию, сообщество оставалось
+        // пустым, и написать им потом было не от кого.
+        if (!user.vk_group_id) {
+            await db.query('UPDATE users SET vk_group_id = $1 WHERE vk_id = $2 AND vk_group_id IS NULL', [groupId, senderId]);
+            console.info(`[BOT] ${senderId}: запомнено сообщество ${groupId}`);
+            user = { ...user, vk_group_id: groupId };
         }
 
         // 2.5. Сверка курса студента с его сообществом. Сбой здесь не должен

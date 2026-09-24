@@ -12,8 +12,14 @@
 // введённый вместо нажатия кнопки, и человек оставался в диалоге без кнопок.
 // Ошибку исправили, но сами эти люди об этом не узнают, пока не напишут снова.
 //
-// Скрипт безопасно запускать повторно: он ничего не меняет в базе. Но людям
-// приходят сообщения, поэтому по умолчанию он только показывает список.
+// У кого сообщество не записано — это те, кто писал боту до сентября 2026, когда
+// сообщество запоминалось только после полной регистрации. Таким скрипт
+// пробует написать от каждого сообщества по очереди: ВКонтакте пропустит только
+// то, которому человек писал сам. Найденное сообщество записывается в базу,
+// чтобы второй раз не перебирать.
+//
+// Скрипт безопасно запускать повторно. Людям приходят сообщения, поэтому по
+// умолчанию он только показывает список.
 require('dotenv').config({ quiet: true });
 const { VK, Keyboard } = require('vk-io');
 const { db } = require('./database');
@@ -69,31 +75,50 @@ async function main() {
         const group = byGroup.get(String(u.vk_group_id));
         const when = new Date(u.created_at).toLocaleDateString('ru-RU');
 
-        if (!group) {
-            // Сообщество не записано или отключено — писать не от кого
-            const why = u.vk_group_id ? `сообщество ${u.vk_group_id} отключено или удалено` : 'сообщество не записано';
-            console.log(`  ${u.vk_id} (${when}) — пропуск: ${why}`);
+        // Сообщество известно — пишем от него. Неизвестно — перебираем все:
+        // лишние попытки ничего не стоят, ВКонтакте просто откажет
+        const candidates = group ? [group] : groups.rows;
+
+        if (candidates.length === 0) {
+            console.log(`  ${u.vk_id} (${when}) — пропуск: нет ни одного подключённого сообщества`);
             skipped++;
             continue;
         }
 
         if (!SEND) {
-            console.log(`  ${u.vk_id} (${when}) — написали бы от «${group.group_name}»`);
+            const from = group ? `от «${group.group_name}»` : `перебором из ${candidates.length} сообществ`;
+            console.log(`  ${u.vk_id} (${when}) — написали бы ${from}`);
             continue;
         }
 
-        if (!clients.has(group.group_id)) clients.set(group.group_id, new VK({ token: group.access_token }));
+        let ok = null;
+        let lastError = '';
+        for (const c of candidates) {
+            if (!clients.has(c.group_id)) clients.set(c.group_id, new VK({ token: c.access_token }));
+            try {
+                await clients.get(c.group_id).api.messages.send({
+                    peer_id: Number(u.vk_id), random_id: 0, message: TEXT, keyboard
+                });
+                ok = c;
+                break;
+            } catch (err) {
+                // Код 901 — человек не писал этому сообществу или запретил ему
+                // писать. При переборе это ожидаемо: подходит только одно
+                lastError = err.message;
+            }
+            await pause(PAUSE_MS);
+        }
 
-        try {
-            await clients.get(group.group_id).api.messages.send({
-                peer_id: Number(u.vk_id), random_id: 0, message: TEXT, keyboard
-            });
-            console.log(`  ${u.vk_id} — отправлено от «${group.group_name}»`);
+        if (ok) {
+            console.log(`  ${u.vk_id} — отправлено от «${ok.group_name}»`);
             sent++;
-        } catch (err) {
-            // Код 901 — человек запретил сообщения от сообщества. Это нормально
-            // и не ошибка скрипта: просто до него не достучаться
-            console.log(`  ${u.vk_id} — не доставлено: ${err.message}`);
+            // Запоминаем найденное сообщество: в следующий раз перебирать не придётся,
+            // да и бот будет знать, откуда с человеком разговаривать
+            if (!group) {
+                await db.query('UPDATE users SET vk_group_id = $1 WHERE vk_id = $2 AND vk_group_id IS NULL', [ok.group_id, u.vk_id]);
+            }
+        } else {
+            console.log(`  ${u.vk_id} — не доставлено: ${lastError}`);
             failed++;
         }
         await pause(PAUSE_MS);
@@ -102,8 +127,6 @@ async function main() {
     if (SEND) {
         console.log(`\nОтправлено: ${sent}, не доставлено: ${failed}, пропущено: ${skipped}`);
         if (failed > 0) console.log('Не доставлено обычно означает, что человек запретил сообщения от сообщества.');
-    } else if (skipped > 0) {
-        console.log(`\nБез сообщества: ${skipped} — этим написать не получится.`);
     }
 }
 
