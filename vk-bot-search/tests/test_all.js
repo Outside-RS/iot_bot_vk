@@ -1885,6 +1885,106 @@ describe('bot — текст вопроса доходит до админист
     });
 });
 
+describe('внешний доступ — состояние и оповещения', () => {
+    // Обрыв пути до панели бесшумный: бот отвечает студентам, копии делаются,
+    // а тьюторы просто не могут открыть панель. Модуль замечает это сам и
+    // говорит администраторам, куда идти, пока доступ не вернут.
+    const ext = require('../external_check')._test;
+    const ADMIN = 99999981;
+    const GROUP = 999000051;
+
+    const outbox = [];
+    const fakeBot = { api: { messages: { send: async (p) => { outbox.push(p); return 1; } } } };
+
+    before(async () => {
+        await db.query('DELETE FROM users WHERE vk_id = $1', [ADMIN]);
+        await db.query(
+            "INSERT INTO users (vk_id, role, full_name, vk_group_id, notify_tickets, state) VALUES ($1, 'operator', 'Алёна', $2, TRUE, 'main_menu')",
+            [ADMIN, GROUP]
+        );
+        global.bots = { [String(GROUP)]: fakeBot };
+    });
+    after(async () => {
+        await db.query('DELETE FROM users WHERE vk_id = $1', [ADMIN]);
+        ext.setProbe(null);
+        global.bots = {};
+    });
+    beforeEach(() => { outbox.length = 0; ext.reset(); });
+
+    const up = () => ext.setProbe(async () => ({ ok: true, code: 200, certExpires: '2026-10-01T00:00:00.000Z' }));
+    const down = () => ext.setProbe(async () => ({ ok: false, error: 'нет ответа за 15 с' }));
+
+    it('Первый неудачный ответ тревогу не поднимает', async () => {
+        down();
+        await ext.runCheck();
+
+        const { getExternalState } = require('../external_check');
+        assert.notEqual(getExternalState().ok, false, 'одиночный сбой не повод объявлять недоступность');
+        assert.equal(outbox.length, 0, 'администраторов беспокоить рано');
+    });
+
+    it('Второй подряд — недоступность и сообщение администраторам', async () => {
+        down();
+        await ext.runCheck();
+        await ext.runCheck();
+
+        const { getExternalState } = require('../external_check');
+        const st = getExternalState();
+        assert.equal(st.ok, false);
+        assert.ok(st.reason.includes('нет ответа'), st.reason);
+        assert.equal(outbox.length, 1, 'сообщение должно уйти один раз');
+        assert.ok(outbox[0].message.includes('localhost:3000'), 'в сообщении должен быть запасной адрес');
+        assert.equal(outbox[0].peer_id, ADMIN);
+    });
+
+    it('Пока не работает — повторные проверки молчат', async () => {
+        down();
+        await ext.runCheck();
+        await ext.runCheck();
+        outbox.length = 0;
+
+        await ext.runCheck();
+        await ext.runCheck();
+        assert.equal(outbox.length, 0, 'повторять одно и то же администраторам не нужно');
+    });
+
+    it('Восстановление — одно сообщение и возврат в рабочее состояние', async () => {
+        down();
+        await ext.runCheck();
+        await ext.runCheck();
+        outbox.length = 0;
+
+        up();
+        await ext.runCheck();
+
+        const { getExternalState } = require('../external_check');
+        assert.equal(getExternalState().ok, true);
+        assert.equal(outbox.length, 1);
+        assert.ok(outbox[0].message.includes('снова'), outbox[0].message);
+
+        outbox.length = 0;
+        await ext.runCheck();
+        assert.equal(outbox.length, 0, 'о том, что всё хорошо, сообщают один раз');
+    });
+
+    it('Первая удачная проверка после запуска никого не беспокоит', async () => {
+        up();
+        await ext.runCheck();
+
+        const { getExternalState } = require('../external_check');
+        assert.equal(getExternalState().ok, true);
+        assert.equal(outbox.length, 0, 'при старте всё в порядке — сообщать не о чем');
+    });
+
+    it('Срок сертификата попадает в состояние', async () => {
+        up();
+        await ext.runCheck();
+
+        const { getExternalState } = require('../external_check');
+        assert.equal(getExternalState().certExpires, '2026-10-01T00:00:00.000Z');
+    });
+});
+
 describe('bot — из диалога всегда есть выход', () => {
     // Регрессия: на вопрос «Кто вы?» человек написал своё имя, и бот не ответил
     // ничего. Кнопки пропали, любое следующее сообщение тоже оставалось без

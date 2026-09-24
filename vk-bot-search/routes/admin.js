@@ -213,7 +213,8 @@ router.get('/', requireAuth, noCache, async (req, res) => {
             ollamaModel: aiSettings.ollama_model || 'qwen2.5:7b',
             gigachatStatus,
             gigachatModel: aiSettings.gigachat_model || 'GigaChat-2',
-            backup: readBackupStatus()
+            backup: readBackupStatus(),
+            external: require('../external_check').getExternalState()
         });
     } catch (e) {
         console.error('[Admin] Dashboard error:', e.message);

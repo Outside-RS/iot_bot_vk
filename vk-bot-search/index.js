@@ -183,6 +183,9 @@ async function startBots() {
 
         console.info(`[BOT] Всего запущено ботов: ${Object.keys(global.bots).length}`);
         startPollingWatchdog();
+        // Проверять внешний доступ есть смысл только когда боты подняты:
+        // уведомление о пропаже уходит администраторам через них
+        require('./external_check').startExternalCheck();
     } catch (e) {
         console.error('[BOT] Не удалось загрузить список групп из базы:', e);
     }
@@ -299,6 +302,7 @@ async function shutdown(reason, exitCode = 0) {
     // 2. Боты отключаются от VK — новые сообщения больше не приходят.
     // Сторож гасим первым, иначе он поднимет их обратно
     if (pollingWatchdog) { clearInterval(pollingWatchdog); pollingWatchdog = null; }
+    require('./external_check').stopExternalCheck();
     await step('боты VK', () => Promise.allSettled(Object.values(global.bots || {}).map(bot => bot.updates.stop())));
 
     // 3. Очередь ИИ: ждём задачи в работе, недоделанные возвращаем в очередь

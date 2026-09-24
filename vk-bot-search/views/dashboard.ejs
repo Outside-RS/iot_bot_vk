@@ -35,6 +35,31 @@
     </div>
 
     <div class="kpi">
+        <div class="kpi-label">🌐 Доступ снаружи</div>
+        <% var ex = typeof external !== 'undefined' ? external : null; %>
+        <% if (!ex || !ex.configured) { %>
+            <div class="kpi-value small">не настроен</div>
+            <div class="kpi-note">Панель работает только на этом компьютере</div>
+        <% } else if (ex.ok === null) { %>
+            <div class="kpi-value small">проверяется</div>
+            <div class="kpi-note">Первая проверка — через пару минут после запуска</div>
+        <% } else if (ex.ok) { %>
+            <div class="kpi-value small ok">работает</div>
+            <div class="kpi-note">
+                Панель открывается снаружи
+                <% if (ex.certExpires) { %><br>Сертификат до <%= new Date(ex.certExpires).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }) %><% } %>
+            </div>
+        <% } else { %>
+            <div class="kpi-value small bad">не работает</div>
+            <div class="kpi-note">
+                <%= ex.reason || 'нет ответа' %><br>
+                Бот отвечает студентам как обычно. Недоступна только панель снаружи —
+                эта страница открыта локально.
+            </div>
+        <% } %>
+    </div>
+
+    <div class="kpi">
         <div class="kpi-label">💾 Резервная копия</div>
         <% var b = typeof backup !== 'undefined' ? backup : null; %>
         <% if (!b) { %>
