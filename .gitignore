@@ -9,6 +9,9 @@ vk-bot-search/artifacts/
 .claude/
 frpc.exe
 frpc.toml
+# Настройки конкретного компьютера: публикация портов, отключение туннеля.
+# У каждой установки свои, в репозитории им не место — см. DEPLOY.md, раздел 13
+docker-compose.override.yml
 *.pid
 *.seed
 *.pid.lock
