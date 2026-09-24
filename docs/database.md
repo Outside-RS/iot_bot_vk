@@ -278,6 +278,19 @@ docker compose exec bot node update_faq.js --replace --yes
 При обновлении бота на рабочем компьютере запускается **только**
 `migrate_update.js`. `reset_db.js` там запускать нельзя — он сотрёт данные.
 
+Порядок при обновлении: схема сначала, код потом. В Docker это разовый запуск,
+пока старый бот ещё работает:
+
+```bash
+docker compose build && docker compose run --rm bot node migrate_update.js
+docker compose up -d --build
+```
+
+Обратный порядок оставляет окно, в котором новый код уже запущен, а колонок,
+которые он использует, в базе ещё нет: запросы в этот момент падают с ошибкой
+`42703 column ... does not exist`. Подробнее — в [DEPLOY.md](../DEPLOY.md),
+раздел 4.
+
 ## Как заглянуть в базу руками
 
 ```bash

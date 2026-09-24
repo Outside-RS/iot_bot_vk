@@ -236,21 +236,31 @@ git pull
 
 ## 4. Запуск
 
+Порядок важен: **сначала база приводится к новой версии, потом запускается новый
+код.** Если сделать наоборот, новый бот какое-то время проработает на старой
+схеме, и в это окно студент, создающий обращение, получит ошибку — код уже
+обращается к колонкам, которых ещё нет.
+
+**Шаг 1.** Соберите образ, не запуская бота:
+
 ```bash
-docker compose up -d --build
+docker compose build
 ```
 
 Первый раз это займёт несколько минут: скачиваются образы Caddy и PostgreSQL,
 собираются образы бота и контейнера копий. Нужен интернет.
 
-Затем обновите базу до текущей версии кода:
+**Шаг 2.** Обновите базу разовым запуском:
 
 ```bash
-docker compose exec bot node migrate_update.js
+docker compose run --rm bot node migrate_update.js
 ```
 
-Скрипт идемпотентный: добавляет недостающие колонки и таблицы, данные не трогает,
-запускать можно повторно.
+`run --rm` поднимет базу, выполнит скрипт в отдельном контейнере и удалит его.
+Старый бот в это время продолжает отвечать студентам: миграции только добавляют
+колонки и таблицы, ему они не мешают.
+
+Скрипт идемпотентный: данные не трогает, запускать можно повторно.
 
 **Обратите внимание на строки про сообщества.** В этой версии обращение помнит,
 в каком сообществе задан вопрос: очередь и диалоги администратора теперь
@@ -270,16 +280,22 @@ docker compose exec db psql -U postgres -c "SELECT id, student_vk_id, status, le
 docker compose exec db psql -U postgres -c "UPDATE tickets SET vk_group_id = -00000000 WHERE id = 42"
 ```
 
-**Если база пустая** (бот ставится на новый компьютер с нуля), эта команда завершится
+**Если база пустая** (бот ставится на новый компьютер с нуля), шаг 2 завершится
 ошибкой `relation "ai_queue" does not exist` — обновлять ещё нечего. Сначала создайте
-схему, а потом повторите обновление:
+схему, а потом повторите шаг 2:
 
 ```bash
-docker compose exec bot node reset_db.js
+docker compose run --rm bot node reset_db.js
 ```
 
 Скрипт спросит подтверждение: нужно ввести имя базы. **На работающем боте его запускать
 нельзя** — он удаляет все таблицы вместе с данными.
+
+**Шаг 3.** Запустите всё:
+
+```bash
+docker compose up -d --build
+```
 
 ---
 
@@ -614,8 +630,8 @@ docker compose exec -T db psql -U postgres -c "DROP DATABASE restore_check"
 
 | Задача | Команда |
 |---|---|
-| Обновить бота после изменений в коде | `git pull && docker compose up -d --build` |
-| Обновить базу под новую версию кода | `docker compose exec bot node migrate_update.js` |
+| Обновить бота после изменений в коде | три команды, см. ниже |
+| Обновить базу под новую версию кода | `docker compose run --rm bot node migrate_update.js` |
 | Посмотреть, что происходит | `docker compose logs -f bot` |
 | Сделать копию базы прямо сейчас | `docker compose run --rm backup now` |
 | Дополнить базу знаний из файла | `docker compose exec bot node update_faq.js` |
@@ -626,6 +642,24 @@ docker compose exec -T db psql -U postgres -c "DROP DATABASE restore_check"
 | Выгнать всех из админки | `docker compose exec db psql -U postgres -c "DELETE FROM session"` |
 | Перезапустить всё | `docker compose restart` |
 | Остановить | `docker compose stop` |
+
+Обновление кода — три команды подряд, в этом порядке:
+
+```bash
+git pull
+```
+
+```bash
+docker compose build && docker compose run --rm bot node migrate_update.js
+```
+
+```bash
+docker compose up -d --build
+```
+
+Почему не одной командой `up -d --build`: между запуском нового кода и
+обновлением схемы образуется окно, в котором бот обращается к колонкам, которых
+ещё нет. Подробнее — в разделе 4.
 
 ---
 
@@ -802,14 +836,16 @@ docker compose exec -T db psql -U postgres -c "SELECT (SELECT count(*) FROM faq)
 ### 12.8. Запустите всё остальное
 
 ```bash
-docker compose up -d --build
+docker compose build && docker compose run --rm bot node migrate_update.js
 ```
 
 ```bash
-docker compose exec bot node migrate_update.js
+docker compose up -d --build
 ```
 
-Первая сборка занимает несколько минут и требует интернета.
+Первая сборка занимает несколько минут и требует интернета. Порядок тот же, что
+в разделе 4: сначала схема, потом код. Здесь это не так важно — бот ещё никому
+не отвечает, — но привычка полезная.
 
 ### 12.9. Проверьте и уберите за собой
 

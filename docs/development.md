@@ -212,6 +212,9 @@ if (had.rowCount === 0) {
 ```bash
 node reset_db.js --yes        # чистая установка
 node migrate_update.js        # обновление существующей базы
+
+В Docker на рабочем компьютере то же самое делается разовым контейнером, до
+запуска нового кода: `docker compose run --rm bot node migrate_update.js`.
 ```
 
 **Шаг 4.** Допишите колонку в [database.md](database.md).
