@@ -115,6 +115,33 @@ app.use(session({
 const crypto = require('crypto');
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+/**
+ * Есть ли у админки такой адрес вообще.
+ *
+ * Нужно, чтобы отличать настоящую защиту от CSRF от шума сканеров. Проверка
+ * CSRF стоит раньше маршрутов, поэтому запрос на /wp-admin/admin-ajax.php или
+ * /cgi-bin/luci — адреса, которых у нас нет и никогда не было, — отвергался ею
+ * и попадал в журнал предупреждением. Один сканер за двадцать минут оставлял
+ * триста таких строк: 89% журнала за сутки, и настоящие события в них тонули.
+ *
+ * Спрашиваем у самого маршрутизатора. Если внутреннее устройство Express
+ * когда-нибудь изменится, считаем адрес существующим — тогда поведение
+ * останется прежним, с предупреждением.
+ */
+function isKnownRoute(method, urlPath) {
+    try {
+        const wanted = method.toLowerCase();
+        return adminRoutes.stack.some(layer => {
+            if (!layer.route || !Array.isArray(layer.matchers)) return false;
+            if (!layer.route.methods[wanted]) return false;
+            return layer.matchers.some(match => Boolean(match(urlPath)));
+        });
+    } catch (err) {
+        console.debug('[SECURITY] Не удалось проверить существование адреса:', err.message);
+        return true;
+    }
+}
+
 app.use((req, res, next) => {
     if (req.session.isAdmin && !req.session.csrfToken) {
         req.session.csrfToken = crypto.randomBytes(32).toString('hex');
@@ -133,6 +160,13 @@ app.use((req, res, next) => {
         crypto.timingSafeEqual(Buffer.from(sent), Buffer.from(expected));
 
     if (!valid) {
+        // Чужой адрес — это не попытка подделки формы, а перебор уязвимостей
+        // чужих движков. Отвечаем «не найдено» и пишем подробностью, а не
+        // предупреждением: иначе журнал забивается и в нём ничего не видно
+        if (!isKnownRoute(req.method, req.path)) {
+            console.debug(`[SECURITY] ${req.method} ${req.path} с IP ${req.ip}: такого адреса нет (похоже на сканирование)`);
+            return res.status(404).send('Не найдено');
+        }
         console.warn(`[SECURITY] Отклонён запрос без валидного CSRF-токена: ${req.method} ${req.path} с IP ${req.ip}`);
         return res.status(403).send('Запрос отклонён: сессия устарела или форма отправлена со стороннего сайта. Обновите страницу и повторите.');
     }

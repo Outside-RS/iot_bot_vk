@@ -77,7 +77,10 @@ const loginLimiter = rateLimit({
 // Одно место вместо логов в каждом маршруте. GET не пишем — страница логов
 // сама опрашивает сервер раз в секунду и заспамила бы журнал.
 router.use((req, res, next) => {
-    if (req.method === 'GET' || req.path === '/login') return next();
+    // OPTIONS и HEAD не меняют данные, но их любят сканеры — в журнале от них
+    // только шум
+    if (req.method === 'GET' || req.method === 'OPTIONS' || req.method === 'HEAD') return next();
+    if (req.path === '/login') return next();
     const started = Date.now();
     res.on('finish', () => {
         const who = req.session && req.session.isAdmin ? 'администратор' : 'без входа';
